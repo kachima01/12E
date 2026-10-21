@@ -22,6 +22,32 @@ create table if not exists public.contributions (
   receipt_sent_at timestamptz
 );
 
+create table if not exists public.contribution_payment_details (
+  contribution_id uuid primary key references public.contributions (id) on delete cascade,
+  payer_phone text not null check (payer_phone ~ '^\+260[79][0-9]{8}$'),
+  created_at timestamptz not null default now()
+);
+
+-- Move payment numbers from an earlier contribution-column version into the
+-- private table, then remove them from the member-visible table.
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'contributions'
+      and column_name = 'payer_phone'
+  ) then
+    insert into public.contribution_payment_details (contribution_id, payer_phone)
+    select id, payer_phone
+    from public.contributions
+    where payer_phone is not null
+    on conflict (contribution_id) do nothing;
+    alter table public.contributions drop column payer_phone;
+  end if;
+end;
+$$;
+
 create index if not exists contributions_user_created_idx
   on public.contributions (user_id, created_at desc);
 create index if not exists contributions_status_created_idx
@@ -74,7 +100,10 @@ $$;
 
 alter table public.profiles enable row level security;
 alter table public.contributions enable row level security;
+alter table public.contribution_payment_details enable row level security;
+revoke all on public.contribution_payment_details from anon, authenticated;
 
+drop policy if exists "Members can read approved profiles" on public.profiles;
 create policy "Members can read approved profiles"
   on public.profiles for select to authenticated
   using (
@@ -83,11 +112,13 @@ create policy "Members can read approved profiles"
     or id = (select auth.uid())
   );
 
+drop policy if exists "Admins can update membership status" on public.profiles;
 create policy "Admins can update membership status"
   on public.profiles for update to authenticated
   using (public.is_approved_admin())
   with check (role = 'member' or public.is_approved_admin());
 
+drop policy if exists "Approved members can read confirmed contributions" on public.contributions;
 create policy "Approved members can read confirmed contributions"
   on public.contributions for select to authenticated
   using (
@@ -96,6 +127,7 @@ create policy "Approved members can read confirmed contributions"
     or user_id = (select auth.uid())
   );
 
+drop policy if exists "Admins can update contributions" on public.contributions;
 create policy "Admins can update contributions"
   on public.contributions for update to authenticated
   using (public.is_approved_admin())
@@ -103,7 +135,10 @@ create policy "Admins can update contributions"
 
 grant usage on schema public to authenticated;
 grant select, update on public.profiles to authenticated;
-grant select, update on public.contributions to authenticated;
+revoke select, update on public.contributions from authenticated;
+grant select (id, user_id, amount, currency, payment_reference, status, method, created_at, confirmed_at)
+  on public.contributions to authenticated;
+grant update (status, confirmed_at) on public.contributions to authenticated;
 
 -- After creating your account and verifying its email, run this once in SQL Editor:
 -- update public.profiles set role = 'admin', status = 'approved'

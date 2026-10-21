@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import {
   ArrowRight,
@@ -31,6 +31,7 @@ import { isSupabaseConfigured, supabase, workerRequest } from "./lib/supabase";
 type AuthMode = "login" | "signup" | "reset" | "update_password";
 type Page = "overview" | "activity" | "people" | "admin";
 type CheckoutResponse = { checkoutUrl: string; reference: string };
+const MEMBER_TARGET = 500;
 
 const currency = new Intl.NumberFormat("en-ZM", {
   style: "currency",
@@ -77,6 +78,8 @@ function App() {
   const [showContribute, setShowContribute] = useState(false);
   const [busyId, setBusyId] = useState("");
   const [toast, setToast] = useState("");
+  const membersRef = useRef<Profile[]>([]);
+  const notifiedContributionIds = useRef(new Set<string>());
 
   useEffect(() => {
     if (!supabase) {
@@ -141,6 +144,7 @@ function App() {
       supabase
         .from("profiles")
         .select("id,full_name,role,status,created_at")
+        .eq("status", "approved")
         .order("full_name"),
     ]);
     if (contributionResult.error || memberResult.error) {
@@ -157,6 +161,7 @@ function App() {
     }));
     setContributions(contributionItems as Contribution[]);
     setMembers(approvedProfiles);
+    membersRef.current = approvedProfiles;
   }, [profile?.status, session]);
 
   useEffect(() => {
@@ -171,8 +176,27 @@ function App() {
     const client = supabase;
     if (!client || !session || profile?.status === "rejected") return;
     const channel = client
-      .channel("reunion-updates")
-      .on("postgres_changes", { event: "*", schema: "public", table: "contributions" }, () => {
+      .channel(`reunion-updates-${session.user.id}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "contributions" }, (payload) => {
+        const updated = payload.new as Partial<Contribution>;
+        const previous = payload.old as Partial<Contribution>;
+        if (
+          updated.id &&
+          updated.status === "confirmed" &&
+          previous.status !== "confirmed" &&
+          !notifiedContributionIds.current.has(updated.id)
+        ) {
+          notifiedContributionIds.current.add(updated.id);
+          const contributor =
+            membersRef.current.find((member) => member.id === updated.user_id)?.full_name ||
+            "A 12E classmate";
+          const amount = Number(updated.amount);
+          setToast(
+            updated.user_id === session.user.id
+              ? `Your ${currency.format(amount)} contribution is confirmed. Thank you!`
+              : `${contributor} just contributed ${currency.format(amount)} to the reunion fund.`,
+          );
+        }
         void loadData();
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "profiles" }, () => {
@@ -203,6 +227,7 @@ function App() {
   const admin = profile?.role === "admin";
   const adminPending = contributions.filter((item) => item.status === "pending");
   const joiningMembers = members.length;
+  const totalTarget = joiningMembers * MEMBER_TARGET;
 
   async function signOut() {
     if (!supabase) return;
@@ -441,6 +466,7 @@ function App() {
             profile={profile}
             raised={raised}
             joiningMembers={joiningMembers}
+            totalTarget={totalTarget}
             confirmed={confirmed}
             ownConfirmed={myConfirmed}
             pending={myPending}
@@ -485,7 +511,6 @@ function App() {
             void loadData();
           }}
           name={profile.full_name}
-          email={session.user.email ?? ""}
         />
       )}
 
@@ -510,6 +535,7 @@ function OverviewBentoView({
   profile,
   raised,
   joiningMembers,
+  totalTarget,
   confirmed,
   ownConfirmed,
   pending,
@@ -520,6 +546,7 @@ function OverviewBentoView({
   profile: Profile;
   raised: number;
   joiningMembers: number;
+  totalTarget: number;
   confirmed: Contribution[];
   ownConfirmed: Contribution[];
   pending: Contribution[];
@@ -528,8 +555,7 @@ function OverviewBentoView({
   onViewPeople: () => void;
 }) {
   const ownTotal = ownConfirmed.reduce((sum, item) => sum + Number(item.amount), 0);
-  const targetGoal = 50000;
-  const goalPercent = Math.min(100, Math.round((raised / targetGoal) * 100)) || 48;
+  const goalPercent = totalTarget > 0 ? Math.min(100, Math.round((raised / totalTarget) * 100)) : 0;
   const recentTransfers = confirmed.slice(0, 3);
 
   return (
@@ -539,7 +565,7 @@ function OverviewBentoView({
         {/* Card 1: Total raised with mini vertical bar chart */}
         <div className="stat-bento-card">
           <div className="stat-bento-copy">
-            <span className="stat-bento-label">Spent this month</span>
+            <span className="stat-bento-label">Total raised</span>
             <span className="stat-bento-value">{currency.format(raised)}</span>
           </div>
           <div className="mini-bar-chart" aria-hidden="true">
@@ -557,8 +583,8 @@ function OverviewBentoView({
             <Users size={18} />
           </div>
           <div className="stat-bento-copy">
-            <span className="stat-bento-label">New clients</span>
-            <span className="stat-bento-value">{String(joiningMembers || 32).padStart(2, "0")}</span>
+            <span className="stat-bento-label">Classmates joined</span>
+            <span className="stat-bento-value">{String(joiningMembers).padStart(2, "0")}</span>
           </div>
           <svg className="mini-sparkline-svg" viewBox="0 0 60 30" fill="none" aria-hidden="true">
             <path
@@ -576,8 +602,8 @@ function OverviewBentoView({
             <CreditCard size={18} />
           </div>
           <div className="stat-bento-copy">
-            <span className="stat-bento-label">Earnings</span>
-            <span className="stat-bento-value">{currency.format(ownTotal || 350.40)}</span>
+            <span className="stat-bento-label">Your contributions</span>
+            <span className="stat-bento-value">{currency.format(ownTotal)}</span>
           </div>
         </div>
 
@@ -589,8 +615,8 @@ function OverviewBentoView({
           title="View your contribution activity"
         >
           <div className="stat-bento-copy">
-            <span className="stat-bento-label">Activity</span>
-            <span className="stat-bento-value">{currency.format(ownTotal || 540.50)}</span>
+            <span className="stat-bento-label">Class target</span>
+            <span className="stat-bento-value">{currency.format(totalTarget)}</span>
           </div>
           <svg className="mini-sparkline-svg" viewBox="0 0 60 30" fill="none" aria-hidden="true">
             <path
@@ -622,7 +648,7 @@ function OverviewBentoView({
         <div className="bento-card">
           <div className="balance-card-header">
             <div className="balance-card-title-group">
-              <span className="balance-card-title">Balance</span>
+              <span className="balance-card-title">Reunion fund progress</span>
               <span className="badge-pill-ontrack">
                 <Check size={11} /> On track
               </span>
@@ -635,18 +661,18 @@ function OverviewBentoView({
           {/* Floating inner pill cards */}
           <div className="balance-pills-row">
             <div className="balance-floating-pill">
-              <span className="balance-pill-label">Saves</span>
+              <span className="balance-pill-label">Target per classmate</span>
               <div className="balance-pill-data">
-                <span className="balance-pill-number">43.50%</span>
-                <span className="percentage-chip percentage-chip--positive">+2.45%</span>
+                <span className="balance-pill-number">{currency.format(MEMBER_TARGET)}</span>
+                <span className="percentage-chip percentage-chip--positive">{joiningMembers} members</span>
               </div>
             </div>
 
             <div className="balance-floating-pill">
               <span className="balance-pill-label">Balance</span>
               <div className="balance-pill-data">
-                <span className="balance-pill-number">{currency.format(raised || 52422)}</span>
-                <span className="percentage-chip percentage-chip--negative">-4.75%</span>
+                <span className="balance-pill-number">{currency.format(raised)}</span>
+                <span className="percentage-chip percentage-chip--positive">of {currency.format(totalTarget)}</span>
               </div>
             </div>
           </div>
@@ -680,10 +706,10 @@ function OverviewBentoView({
         {/* Card 2: Earnings & Semi-circular Gauge Meter */}
         <div className="bento-card gauge-card">
           <div>
-            <div className="gauge-header-label">Earnings</div>
-            <div className="gauge-header-sub">Total Expense</div>
-            <div className="gauge-amount">{currency.format(raised || 6078.76)}</div>
-            <div className="gauge-growth-note">Profit is 34% More than last Month</div>
+            <div className="gauge-header-label">Class target</div>
+            <div className="gauge-header-sub">K500 per joined classmate</div>
+            <div className="gauge-amount">{currency.format(totalTarget)}</div>
+            <div className="gauge-growth-note">{joiningMembers} classmates × {currency.format(MEMBER_TARGET)}</div>
           </div>
 
           <div className="gauge-circle-container">
@@ -701,7 +727,7 @@ function OverviewBentoView({
                 stroke="#52735e"
                 strokeWidth="12"
                 strokeDasharray="188.5"
-                strokeDashoffset={188.5 * (1 - 0.8)}
+                strokeDashoffset={188.5 * (1 - goalPercent / 100)}
                 strokeLinecap="round"
               />
             </svg>
@@ -709,31 +735,25 @@ function OverviewBentoView({
           </div>
         </div>
 
-        {/* Card 3: User Profile Card (Carlic Bolomboy) */}
+        {/* Member profile and personal contribution total */}
         <div className="bento-card profile-bento-card">
           <div className="profile-bento-avatar-wrap">
-            <div className="profile-bento-avatar" aria-hidden="true">
-              😎
-            </div>
+            <div className="profile-bento-avatar" aria-hidden="true">{initials(profile.full_name)}</div>
           </div>
 
           <div>
-            <h3 className="profile-bento-name">{profile.full_name || "Carlic Bolomboy"}</h3>
-            <p className="profile-bento-email">{profile.full_name.toLowerCase().replace(/\s+/g, "")}@gmail.com</p>
+            <h3 className="profile-bento-name">{profile.full_name}</h3>
+            <p className="profile-bento-email">12E · Class of 2017</p>
           </div>
 
           <div className="profile-bento-stats">
             <div className="profile-stat-col">
-              <span className="profile-stat-label">Projects</span>
-              <span className="profile-stat-val">26</span>
+              <span className="profile-stat-label">Confirmed</span>
+              <span className="profile-stat-val">{ownConfirmed.length}</span>
             </div>
             <div className="profile-stat-col">
-              <span className="profile-stat-label">Followers</span>
-              <span className="profile-stat-val">356</span>
-            </div>
-            <div className="profile-stat-col">
-              <span className="profile-stat-label">Following</span>
-              <span className="profile-stat-val">68</span>
+              <span className="profile-stat-label">Given</span>
+              <span className="profile-stat-val">{currency.format(ownTotal)}</span>
             </div>
           </div>
         </div>
@@ -741,15 +761,15 @@ function OverviewBentoView({
 
       {/* ── Bottom Row (Bento Grid: 2 cols + 1 col + 1 col) ─── */}
       <section className="bottom-bento-row">
-        {/* Card 1 (Span 2): Available Credit Card in Wallet (Isometric Stack) */}
+        {/* Class fund contribution card */}
         <div className="bento-card wallet-bento-card">
           <div className="wallet-card-content">
-            <h3 className="wallet-card-title">Available Credit Card in Wallet</h3>
+            <h3 className="wallet-card-title">Every classmate counts.</h3>
             <p className="wallet-card-desc">
-              Lorem ipsum dolor sit amet consectetur. Facilisis tincidunt purus id hendrerit cras massa sollicitudin adipiscing. Sit egestas risus sed sit auctor.
+              K500 is the class target for each approved member. Add funds using mobile money and help bring 12E back together.
             </p>
             <button className="btn-pill-green" onClick={onContribute}>
-              Add New Card +
+              Add funds <Plus size={14} />
             </button>
           </div>
 
@@ -757,10 +777,10 @@ function OverviewBentoView({
           <div className="isometric-cards-stage" aria-hidden="true">
             {/* Bottom charcoal card */}
             <div className="iso-card iso-card--bot">
-              <span className="iso-card-network">Master Card</span>
-              <span className="iso-card-num">1234 1234 1234 1234</span>
+              <span className="iso-card-network">12E REUNION</span>
+              <span className="iso-card-num">DAVID LIVINGSTONE</span>
               <div className="iso-card-bottom">
-                <span className="iso-card-name">12E CLASS</span>
+                <span className="iso-card-name">CLASS OF 2017</span>
                 <div className="iso-mastercard-circles">
                   <span className="iso-circle-red" />
                   <span className="iso-circle-yellow" />
@@ -770,10 +790,10 @@ function OverviewBentoView({
 
             {/* Middle deep sage green card */}
             <div className="iso-card iso-card--mid">
-              <span className="iso-card-network">Master Card</span>
-              <span className="iso-card-num">1234 1234 1234 1234</span>
+              <span className="iso-card-network">12E REUNION</span>
+              <span className="iso-card-num">ONE CLASS · ONE HOME</span>
               <div className="iso-card-bottom">
-                <span className="iso-card-name">12E REUNION</span>
+                <span className="iso-card-name">K500 CLASS TARGET</span>
                 <div className="iso-mastercard-circles">
                   <span className="iso-circle-red" />
                   <span className="iso-circle-yellow" />
@@ -783,14 +803,14 @@ function OverviewBentoView({
 
             {/* Top frosted translucent mint card */}
             <div className="iso-card iso-card--top">
-              <span className="iso-card-network">Master Card</span>
+              <span className="iso-card-network">DAVID LIVINGSTONE</span>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: 7, fontWeight: 700 }}>LANA STEINER</span>
-                <span style={{ fontSize: 6.5, fontWeight: 600 }}>06/28</span>
+                <span style={{ fontSize: 7, fontWeight: 700 }}>CLASS OF 2017</span>
+                <span style={{ fontSize: 6.5, fontWeight: 600 }}>12E</span>
               </div>
-              <span className="iso-card-num">1234 1234 1234 1234</span>
+              <span className="iso-card-num">STILL OUR CLASS</span>
               <div className="iso-card-bottom">
-                <span className="iso-card-name">DAVID LIVINGSTONE</span>
+                <span className="iso-card-name">REUNION FUND</span>
                 <div className="iso-mastercard-circles">
                   <span className="iso-circle-red" />
                   <span className="iso-circle-yellow" />
@@ -802,49 +822,25 @@ function OverviewBentoView({
 
         {/* Card 2: Your Transfers / Recent Contributions */}
         <div className="bento-card">
-          <div className="transfers-card-title">Your Transfers</div>
+          <div className="transfers-card-title">Latest contributions</div>
           <div className="transfers-list">
             {recentTransfers.length > 0 ? (
-              recentTransfers.map((item, idx) => {
+              recentTransfers.map((item) => {
                 const name = item.profiles?.full_name || "12E Classmate";
-                const badges = ["+2.45%", "-4.75%", "+2.45%"];
-                const isNeg = idx === 1;
                 return (
                   <div className="transfer-item-row" key={item.id}>
                     <div className="transfer-item-info">
                       <span className="transfer-item-name">From {name}</span>
                       <span className="transfer-item-time">{formatDate(item.created_at)}</span>
                     </div>
-                    <span className={`transfer-badge ${isNeg ? "percentage-chip--negative" : "percentage-chip--positive"}`}>
-                      {badges[idx % badges.length]}
+                    <span className="transfer-badge percentage-chip--positive">
+                      +{currency.format(Number(item.amount))}
                     </span>
                   </div>
                 );
               })
             ) : (
-              <>
-                <div className="transfer-item-row">
-                  <div className="transfer-item-info">
-                    <span className="transfer-item-name">From Anna Jones</span>
-                    <span className="transfer-item-time">Today, 14:34</span>
-                  </div>
-                  <span className="transfer-badge percentage-chip--positive">+2.45%</span>
-                </div>
-                <div className="transfer-item-row">
-                  <div className="transfer-item-info">
-                    <span className="transfer-item-name">To Carlos Brown III</span>
-                    <span className="transfer-item-time">Today, 15:23</span>
-                  </div>
-                  <span className="transfer-badge percentage-chip--negative">-4.75%</span>
-                </div>
-                <div className="transfer-item-row">
-                  <div className="transfer-item-info">
-                    <span className="transfer-item-name">From Joel Cannan</span>
-                    <span className="transfer-item-time">Today, 17:54</span>
-                  </div>
-                  <span className="transfer-badge percentage-chip--positive">+2.45%</span>
-                </div>
-              </>
+              <p className="transfer-empty">Confirmed contributions will appear here.</p>
             )}
           </div>
         </div>
@@ -1137,15 +1133,14 @@ function ContributionDialog({
   onError,
   onSuccess,
   name,
-  email,
 }: {
   onClose: () => void;
   onError: (msg: string) => void;
   onSuccess: () => void;
   name: string;
-  email: string;
 }) {
   const [amount, setAmount] = useState("500");
+  const [phone, setPhone] = useState("");
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
   const amounts = [250, 500, 1000, 2000];
@@ -1153,8 +1148,13 @@ function ContributionDialog({
   async function submit(e: FormEvent) {
     e.preventDefault();
     const num = Number(amount);
-    if (!Number.isFinite(num) || num < 1) {
-      setError("Enter an amount of at least K1.");
+    if (!Number.isFinite(num) || num < 1 || num > 100000) {
+      setError("Enter an amount between K1 and K100,000.");
+      return;
+    }
+    const normalizedPhone = normalizeZambianPhone(phone);
+    if (!normalizedPhone) {
+      setError("Enter a valid Zambian mobile number, such as 0971234567 or +260971234567.");
       return;
     }
     const popup = window.open("about:blank", "_blank");
@@ -1165,7 +1165,10 @@ function ContributionDialog({
     setWorking(true);
     setError("");
     try {
-      const checkout = await workerRequest<CheckoutResponse>("/api/payment/checkout", { amount: num });
+      const checkout = await workerRequest<CheckoutResponse>("/api/payment/checkout", {
+        amount: num,
+        phone: normalizedPhone,
+      });
       if (!checkout.checkoutUrl || !checkout.reference) throw new Error("Incomplete checkout response.");
       popup.location.href = checkout.checkoutUrl;
       onSuccess();
@@ -1218,22 +1221,39 @@ function ContributionDialog({
             ))}
           </div>
 
+          <div className="auth-field" style={{ marginBottom: 16 }}>
+            <label htmlFor="payer-phone">Mobile money number to charge</label>
+            <input
+              id="payer-phone"
+              type="tel"
+              inputMode="tel"
+              autoComplete="tel"
+              placeholder="097 123 4567"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              required
+            />
+          </div>
+
           <div style={{ background: "#f8f8f5", borderRadius: 14, padding: "12px 14px", display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
             <div style={{ width: 28, height: 28, borderRadius: 8, background: "#52735e", color: "#ffffff", display: "grid", placeItems: "center", fontWeight: 800, fontSize: 13 }}>
               L
             </div>
             <div style={{ display: "flex", flexDirection: "column" }}>
               <strong style={{ fontSize: 11, color: "#1c221e" }}>Pay securely with Lipila</strong>
-              <span style={{ fontSize: 9.5, color: "#8d958e" }}>Airtel, MTN, Zamtel Mobile Money</span>
+              <span style={{ fontSize: 9.5, color: "#8d958e" }}>Airtel, MTN, or Zamtel · fee paid by you</span>
             </div>
           </div>
 
           <div style={{ fontSize: 10, color: "#8d958e", marginBottom: 12, display: "flex", justifyContent: "space-between" }}>
             <span>Contributing as:</span>
-            <strong style={{ color: "#1c221e" }}>{name} ({email})</strong>
+            <strong style={{ color: "#1c221e" }}>{name}</strong>
           </div>
 
           {error && <div style={{ color: "#9e463e", fontSize: 11, marginBottom: 10 }}>{error}</div>}
+          <p style={{ color: "#8d958e", fontSize: 9, lineHeight: 1.5, margin: "0 0 12px" }}>
+            Lipila will confirm the payment to your mobile number. The amount you enter is credited to the fund; any collection fee is additional and paid by you at checkout.
+          </p>
 
           <button className="btn-auth-submit" style={{ width: "100%" }} type="submit" disabled={working}>
             {working ? "Connecting to Lipila…" : "Continue to Payment"} <ArrowRight size={15} />
@@ -1264,12 +1284,14 @@ function AuthScreen({
   const [showPassword, setShowPassword] = useState(false);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
+  const [canResendConfirmation, setCanResendConfirmation] = useState(false);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (!supabase) return;
     setWorking(true);
     setError("");
+    setCanResendConfirmation(false);
     setNotice("");
     try {
       if (mode === "signup") {
@@ -1294,7 +1316,14 @@ function AuthScreen({
         if (err) throw err;
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Request failed.");
+      const message = err instanceof Error ? err.message : "Request failed.";
+      const isEmailRateLimit = /email rate limit exceeded|rate limit.*email/i.test(message);
+      setCanResendConfirmation(isEmailRateLimit && mode === "signup");
+      setError(
+        isEmailRateLimit
+          ? "Supabase has temporarily limited verification emails. Wait before trying again, or connect Resend as Supabase SMTP to raise the limit."
+          : message,
+      );
     } finally {
       setWorking(false);
     }
@@ -1413,6 +1442,34 @@ function AuthScreen({
           </div>
 
           {error && <div style={{ color: "#9e463e", fontSize: 11, marginBottom: 12 }}>{error}</div>}
+          {canResendConfirmation && (
+            <button
+              type="button"
+              className="btn-pill-green"
+              style={{ width: "100%", marginBottom: 12 }}
+              disabled={working || !email.trim()}
+              onClick={async () => {
+                if (!supabase) return;
+                setWorking(true);
+                const { error: resendError } = await supabase.auth.resend({
+                  type: "signup",
+                  email: email.trim(),
+                });
+                setWorking(false);
+                if (resendError) {
+                  setError(/rate limit/i.test(resendError.message)
+                    ? "Email sending is still rate-limited. Wait a while, configure Resend SMTP in Supabase Auth, then retry."
+                    : resendError.message);
+                } else {
+                  setError("");
+                  setNotice("Verification email sent. Check your inbox and spam folder.");
+                  setCanResendConfirmation(false);
+                }
+              }}
+            >
+              Resend verification email
+            </button>
+          )}
 
           <button className="btn-auth-submit" style={{ width: "100%" }} type="submit" disabled={working}>
             {working
@@ -1507,6 +1564,13 @@ function LoadingScreen({ message = "Getting your 12E space ready…" }: { messag
 
 function initials(name: string) {
   return name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? "").join("") || "12";
+}
+
+function normalizeZambianPhone(phone: string) {
+  const digits = phone.replace(/[^\d]/g, "");
+  const local = digits.startsWith("260") ? digits.slice(3) : digits.startsWith("0") ? digits.slice(1) : digits;
+  if (!/^[79]\d{8}$/.test(local)) return null;
+  return `+260${local}`;
 }
 
 export default App;

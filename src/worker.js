@@ -101,11 +101,21 @@ async function createCheckout(request, env) {
   if (!Number.isFinite(amount) || amount < 1 || amount > 100000 || Math.round(amount * 100) !== amount * 100) {
     return json({ error: "Enter a valid amount in ZMW." }, 400);
   }
+  const phoneDigits = String(body.phone || "").replace(/\D/g, "");
+  const localPhone = phoneDigits.startsWith("260")
+    ? phoneDigits.slice(3)
+    : phoneDigits.startsWith("0")
+      ? phoneDigits.slice(1)
+      : phoneDigits;
+  if (!/^[79]\d{8}$/.test(localPhone)) {
+    return json({ error: "Enter a valid Zambian mobile money number." }, 400);
+  }
+  const payerPhone = `+260${localPhone}`;
 
   const reference = randomReference();
-  await supabaseRequest(env, "/rest/v1/contributions", {
+  const [contribution] = await supabaseRequest(env, "/rest/v1/contributions?select=id", {
     method: "POST",
-    headers: { prefer: "return=minimal" },
+    headers: { prefer: "return=representation" },
     body: JSON.stringify({
       user_id: auth.user.id,
       amount,
@@ -115,13 +125,26 @@ async function createCheckout(request, env) {
       status: "pending",
     }),
   });
+  if (!contribution?.id) {
+    throw new Error("Could not create the contribution record.");
+  }
+  try {
+    await supabaseRequest(env, "/rest/v1/contribution_payment_details", {
+      method: "POST",
+      headers: { prefer: "return=minimal" },
+      body: JSON.stringify({ contribution_id: contribution.id, payer_phone: payerPhone }),
+    });
+  } catch (error) {
+    await markCheckoutRejected(env, reference);
+    throw error;
+  }
 
   const requestUrl = new URL(request.url);
   const checkoutPayload = {
     amount,
     currency: "ZMW",
     reference,
-    customer: { name: profile.full_name, email: auth.user.email },
+    customer: { name: profile.full_name, email: auth.user.email, phone: payerPhone },
     return_url: `${requestUrl.origin}/?payment=return`,
     webhook_url: `${requestUrl.origin}/api/webhooks/lipila`,
   };

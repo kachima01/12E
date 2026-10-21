@@ -15,7 +15,7 @@ A private contribution and classmate portal for David Livingstone Secondary Scho
 4. Configure Supabase Auth:
    - Enable email confirmations.
    - Set the site URL and local redirect URL (`http://localhost:5173`).
-   - For verification and password-reset email, configure Resend as the Supabase custom SMTP provider.
+   - For verification and password-reset email, configure Resend as the Supabase custom SMTP provider: SMTP host `smtp.resend.com`, port `465` (SSL) or `587` (STARTTLS), username `resend`, password your Resend API key, and sender address on a verified Resend domain. This avoids relying on Supabase's built-in mailer limits; wait for a rate-limited request to reset before retrying.
 5. Start the Cloudflare Worker and Vite in separate terminals:
 
    ```sh
@@ -35,24 +35,28 @@ set role = 'admin', status = 'approved'
 where id = (select id from auth.users where email = 'YOUR_ADMIN_EMAIL');
 ```
 
-All other sign-ups start as pending. Admins approve them in **Admin desk**. Members can see confirmed contribution totals and classmate names; emails are only used for account access and receipts.
+The current profile trigger approves new sign-ups automatically. If you want the original approval-gated flow, change the profile status default and trigger value in `schema.sql` to `pending`; admins can then approve members in **Admin desk**. Members can see confirmed contribution totals and classmate names; payer phone numbers are kept in a separate backend-only table.
 
 ## Payment integration
 
-The app defaults to ZMW and suggests K500, but members can enter another amount. Checkout is created by the Worker at `POST /api/payment/checkout`; payment is counted only after the signed Lipila webhook confirms it. The Worker adapter sends this JSON to `LIPILA_CHECKOUT_URL`:
+The app defaults to ZMW and suggests K500, but members can enter another amount and the Zambian mobile number to charge. The entered amount is the contribution credited to the reunion fund; the member-facing checkout tells the payer to cover any Lipila collection fee. The member target is K500 per approved classmate, so the overall target is the current approved-classmate count multiplied by K500. Successful payments trigger an in-app realtime confirmation for the payer and a class-wide contribution notification.
+
+Checkout is created by the Worker at `POST /api/payment/checkout`; payment is counted only after the signed Lipila webhook confirms it. The Worker adapter sends this JSON to `LIPILA_CHECKOUT_URL`:
 
 ```json
 {
   "amount": 500,
   "currency": "ZMW",
   "reference": "12E-...",
-  "customer": { "name": "Member name", "email": "member@example.com" },
+  "customer": { "name": "Member name", "email": "member@example.com", "phone": "+260971234567" },
   "return_url": "https://your-site.example/?payment=return",
   "webhook_url": "https://your-site.example/api/webhooks/lipila"
 }
 ```
 
-The configured Lipila endpoint must accept a bearer API key and return `{ "checkout_url": "https://..." }`. The webhook adapter currently expects a raw-body HMAC-SHA256 signature in `x-lipila-signature`, and a JSON body containing `status`, `reference`, and `amount`. **Confirm these request, response, and signature details against your Lipila merchant API documentation before enabling live payments.** Provider-specific API details could not be verified from this environment; the app returns a clear setup error rather than pretending an unconfigured gateway is live.
+The configured Lipila endpoint must accept a bearer API key and return `{ "checkout_url": "https://..." }`. The webhook adapter currently expects a raw-body HMAC-SHA256 signature in `x-lipila-signature`, and a JSON body containing `status`, `reference`, and the contribution `amount` (excluding any customer-paid collection fee). Configure Lipila to make the payer responsible for that fee. **Confirm the phone field, fee payer option, request/response, signature, amount semantics, and webhook retry details against your Lipila merchant API documentation before enabling live payments.** Provider-specific API details could not be verified from this environment; the adapter is not a verified production integration until those details match Lipila.
+
+For an existing Supabase project, re-run [`schema.sql`](./schema.sql) to create the private `contribution_payment_details` table. It migrates any earlier `payer_phone` column data, removes that column from member-visible contribution rows, and keeps payer numbers accessible only to the backend service key.
 
 ## Cloudflare deployment
 
@@ -70,7 +74,7 @@ The configured Lipila endpoint must accept a bearer API key and return `{ "check
    ```
 
    Keep the Supabase secret key, Lipila API key, webhook secret, and Resend API key in Worker secrets only. Never use them in `VITE_*` variables or browser code. Since the Supabase secret key was shared in chat, rotate it in the Supabase dashboard before setting the Worker secret.
-2. Configure the same Supabase Auth and Resend SMTP settings as above. In Supabase Realtime settings, enable `profiles` and `contributions` for the `supabase_realtime` publication.
+2. Configure the same Supabase Auth and Resend SMTP settings as above. In Supabase Realtime settings, enable `profiles` and `contributions` for the `supabase_realtime` publication so payment confirmations can notify members live.
 3. Connect the GitHub repository to Cloudflare Workers, or deploy with:
 
    ```sh
