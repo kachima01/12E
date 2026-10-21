@@ -507,10 +507,9 @@ function App() {
           onError={(message) => setToast(message)}
           onSuccess={() => {
             setShowContribute(false);
-            setToast("Payment checkout started. Your contribution will appear when Lipila confirms it.");
+            setToast("Payment started. Your chosen amount will be added to the fund after Lipila confirms it.");
             void loadData();
           }}
-          name={profile.full_name}
         />
       )}
 
@@ -1132,12 +1131,10 @@ function ContributionDialog({
   onClose,
   onError,
   onSuccess,
-  name,
 }: {
   onClose: () => void;
   onError: (msg: string) => void;
   onSuccess: () => void;
-  name: string;
 }) {
   const [amount, setAmount] = useState("500");
   const [phone, setPhone] = useState("");
@@ -1202,6 +1199,9 @@ function ContributionDialog({
             <input
               type="number"
               min="1"
+              max="100000"
+              step="0.01"
+              aria-label="Contribution amount in Zambian kwacha"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
               required
@@ -1233,41 +1233,6 @@ function ContributionDialog({
               onChange={(e) => setPhone(e.target.value)}
               required
             />
-            {normalizeZambianPhone(phone) && (
-              <div
-                role="status"
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 9,
-                  marginTop: 8,
-                  padding: "9px 11px",
-                  borderRadius: 10,
-                  background: "#e6eee8",
-                  color: "#376847",
-                  fontSize: 10,
-                }}
-              >
-                <span
-                  aria-hidden="true"
-                  style={{
-                    width: 26,
-                    height: 26,
-                    flex: "0 0 auto",
-                    borderRadius: "50%",
-                    display: "grid",
-                    placeItems: "center",
-                    background: "#d4e4d8",
-                    fontWeight: 700,
-                  }}
-                >
-                  {initials(name)}
-                </span>
-                <span>
-                  12E member name for this payment: <strong>{name}</strong>
-                </span>
-              </div>
-            )}
           </div>
 
           <div style={{ background: "#f8f8f5", borderRadius: 14, padding: "12px 14px", display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
@@ -1280,9 +1245,11 @@ function ContributionDialog({
             </div>
           </div>
 
-          <div style={{ fontSize: 10, color: "#8d958e", marginBottom: 12, display: "flex", justifyContent: "space-between" }}>
-            <span>Contributing as:</span>
-            <strong style={{ color: "#1c221e" }}>{name}</strong>
+          <div style={{ background: "#e6eee8", borderRadius: 12, padding: "10px 12px", marginBottom: 12, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+            <span style={{ color: "#52735e", fontSize: 10 }}>Added to the reunion fund after payment confirmation</span>
+            <strong style={{ color: "#1c221e", whiteSpace: "nowrap" }}>
+              {currency.format(Number(amount) || 0)}
+            </strong>
           </div>
 
           {error && <div style={{ color: "#9e463e", fontSize: 11, marginBottom: 10 }}>{error}</div>}

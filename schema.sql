@@ -28,6 +28,12 @@ create table if not exists public.contribution_payment_details (
   created_at timestamptz not null default now()
 );
 
+create table if not exists public.lipila_webhook_events (
+  webhook_id text primary key,
+  event_type text not null,
+  processed_at timestamptz not null default now()
+);
+
 -- Move payment numbers from an earlier contribution-column version into the
 -- private table, then remove them from the member-visible table.
 do $$
@@ -101,7 +107,8 @@ $$;
 alter table public.profiles enable row level security;
 alter table public.contributions enable row level security;
 alter table public.contribution_payment_details enable row level security;
-revoke all on public.contribution_payment_details from anon, authenticated;
+alter table public.lipila_webhook_events enable row level security;
+revoke all on public.contribution_payment_details, public.lipila_webhook_events from anon, authenticated;
 
 drop policy if exists "Members can read approved profiles" on public.profiles;
 create policy "Members can read approved profiles"

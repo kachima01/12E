@@ -193,25 +193,63 @@ async function markCheckoutRejected(env, reference) {
   );
 }
 
-function equalSignature(left, right) {
-  if (!left || !right || left.length !== right.length) return false;
-  let result = 0;
-  for (let index = 0; index < left.length; index += 1) {
-    result |= left.charCodeAt(index) ^ right.charCodeAt(index);
+function decodeWebhookSecret(secret) {
+  const encoded = secret.startsWith("whsec_") ? secret.slice(6) : secret;
+  let binary;
+  try {
+    binary = atob(encoded);
+  } catch {
+    return null;
   }
-  return result === 0;
+  if (binary.length !== 32) return null;
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
-async function hmacHex(secret, body) {
+async function verifyLipilaSignature(secret, webhookId, timestamp, rawBodyBytes, signatureHeader) {
+  const keyBytes = decodeWebhookSecret(secret);
+  if (!keyBytes) return false;
   const key = await crypto.subtle.importKey(
     "raw",
-    new TextEncoder().encode(secret),
+    keyBytes,
     { name: "HMAC", hash: "SHA-256" },
     false,
-    ["sign"],
+    ["verify"],
   );
-  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body));
-  return Array.from(new Uint8Array(signature), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const signedBody = new TextEncoder().encode(`${webhookId}.${timestamp}.`);
+  const signedPayload = new Uint8Array(signedBody.length + rawBodyBytes.length);
+  signedPayload.set(signedBody);
+  signedPayload.set(rawBodyBytes, signedBody.length);
+
+  const signatures = signatureHeader.trim().split(/\s+/);
+  for (const signature of signatures) {
+    const [version, encodedSignature] = signature.split(",", 2);
+    if (version !== "v1" || !encodedSignature) continue;
+    let signatureBytes;
+    try {
+      const binary = atob(encodedSignature);
+      signatureBytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    } catch {
+      continue;
+    }
+    if (await crypto.subtle.verify("HMAC", key, signatureBytes, signedPayload)) return true;
+  }
+  return false;
+}
+
+async function wasWebhookProcessed(env, webhookId) {
+  const rows = await supabaseRequest(
+    env,
+    `/rest/v1/lipila_webhook_events?webhook_id=eq.${encodeURIComponent(webhookId)}&select=webhook_id`,
+  );
+  return rows.length > 0;
+}
+
+async function markWebhookProcessed(env, webhookId, eventType) {
+  await supabaseRequest(env, "/rest/v1/lipila_webhook_events", {
+    method: "POST",
+    headers: { prefer: "resolution=ignore-duplicates,return=minimal" },
+    body: JSON.stringify({ webhook_id: webhookId, event_type: eventType }),
+  });
 }
 
 async function findAuthEmail(env, userId) {
@@ -295,27 +333,72 @@ async function confirmContribution(env, contribution) {
 
 async function handlePaymentWebhook(request, env) {
   if (!env.LIPILA_WEBHOOK_SECRET) return json({ error: "Payment webhook is not configured." }, 503);
-  const rawBody = await request.text();
-  const expected = await hmacHex(env.LIPILA_WEBHOOK_SECRET, rawBody);
-  if (!equalSignature((request.headers.get("x-lipila-signature") || "").toLowerCase(), expected)) {
+  const rawBodyBytes = new Uint8Array(await request.arrayBuffer());
+  if (rawBodyBytes.length > 1024 * 1024) return json({ error: "Webhook payload is too large." }, 413);
+  const webhookId = request.headers.get("webhook-id") || "";
+  const timestamp = request.headers.get("webhook-timestamp") || "";
+  const signatures = request.headers.get("webhook-signature") || "";
+  if (!webhookId || !/^\d+$/.test(timestamp) || !signatures) {
+    return json({ error: "Missing or invalid Lipila webhook headers." }, 400);
+  }
+  const timestampSeconds = Number(timestamp);
+  if (
+    !Number.isSafeInteger(timestampSeconds) ||
+    Math.abs(Math.floor(Date.now() / 1000) - timestampSeconds) > 300
+  ) {
+    return json({ error: "Webhook timestamp is outside the five-minute tolerance." }, 401);
+  }
+  if (
+    !(await verifyLipilaSignature(
+      env.LIPILA_WEBHOOK_SECRET,
+      webhookId,
+      timestamp,
+      rawBodyBytes,
+      signatures,
+    ))
+  ) {
     return json({ error: "Invalid webhook signature." }, 401);
   }
 
   let event;
   try {
-    event = JSON.parse(rawBody);
+    event = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(rawBodyBytes));
   } catch {
     return json({ error: "Invalid JSON payload." }, 400);
   }
-  if (String(event.status || "").toLowerCase() !== "success") return json({ ok: true, ignored: true });
-  const reference = String(event.reference || "").trim();
+  if (await wasWebhookProcessed(env, webhookId)) return json({ ok: true, duplicate: true });
+
+  const eventType = String(event.type || "");
+  if (eventType !== "transaction.completed") {
+    await markWebhookProcessed(env, webhookId, eventType || "unknown");
+    return json({ ok: true, ignored: true });
+  }
+  const transaction = event.data;
+  if (!transaction || typeof transaction !== "object") {
+    return json({ error: "Missing transaction data." }, 400);
+  }
+  const status = String(transaction.status || event.status || "completed").toLowerCase();
+  if (!["success", "successful", "completed"].includes(status)) {
+    await markWebhookProcessed(env, webhookId, eventType);
+    return json({ ok: true, ignored: true });
+  }
+  const reference = String(
+    transaction.reference ||
+      transaction.merchant_reference ||
+      transaction.external_reference ||
+      transaction.metadata?.reference ||
+      "",
+  ).trim();
   if (!reference) return json({ error: "Missing payment reference." }, 400);
 
   const contribution = await getContribution(env, reference);
   if (!contribution) return json({ error: "Contribution not found." }, 404);
-  const paidAmount = Number(event.amount);
+  const paidAmount = Number(transaction.amount);
   if (!Number.isFinite(paidAmount) || Math.round(paidAmount * 100) !== Math.round(Number(contribution.amount) * 100)) {
     return json({ error: "Payment amount does not match the contribution." }, 400);
+  }
+  if (transaction.currency && String(transaction.currency).toUpperCase() !== "ZMW") {
+    return json({ error: "Payment currency does not match the contribution." }, 400);
   }
   if (contribution.status !== "confirmed") {
     await supabaseRequest(
@@ -334,6 +417,7 @@ async function handlePaymentWebhook(request, env) {
     console.error("Receipt delivery is pending retry", error);
     return json({ error: "Payment was recorded but the receipt could not be sent yet." }, 503);
   }
+  await markWebhookProcessed(env, webhookId, eventType);
   return json({ ok: true });
 }
 
@@ -428,3 +512,5 @@ export default {
     return env.ASSETS.fetch(request);
   },
 };
+
+export { verifyLipilaSignature };
