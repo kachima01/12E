@@ -1,8 +1,11 @@
 import { createClient } from "@supabase/supabase-js";
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseUrl =
+  import.meta.env.VITE_SUPABASE_URL || "https://guctpwlilyhhkqgnvzvd.supabase.co";
 const supabasePublishableKey =
-  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || import.meta.env.VITE_SUPABASE_ANON_KEY;
+  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+  import.meta.env.VITE_SUPABASE_ANON_KEY ||
+  "sb_publishable_CAQDcb4sZXMpHfjl0Jk7aw_q_B25iW5";
 
 export const isSupabaseConfigured = Boolean(
   supabaseUrl && supabasePublishableKey && !supabaseUrl.includes("YOUR_PROJECT"),
