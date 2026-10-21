@@ -1356,7 +1356,7 @@ function AuthScreen({
       setCanResendConfirmation(isEmailRateLimit && mode === "signup");
       setError(
         isEmailRateLimit
-          ? "Supabase has temporarily limited verification emails. Wait before trying again, or connect Resend as Supabase SMTP to raise the limit."
+          ? "Supabase has temporarily limited verification emails. Wait for its email limit to reset before trying again."
           : message,
       );
     } finally {
@@ -1493,7 +1493,7 @@ function AuthScreen({
                 setWorking(false);
                 if (resendError) {
                   setError(/rate limit/i.test(resendError.message)
-                    ? "Email sending is still rate-limited. Wait a while, configure Resend SMTP in Supabase Auth, then retry."
+                    ? "Email sending is still rate-limited. Wait for Supabase's email limit to reset, then retry."
                     : resendError.message);
                 } else {
                   setError("");

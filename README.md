@@ -15,7 +15,7 @@ A private contribution and classmate portal for David Livingstone Secondary Scho
 4. Configure Supabase Auth:
    - Enable email confirmations.
    - Set the site URL and local redirect URL (`http://localhost:5173`).
-   - For verification and password-reset email, configure Resend as the Supabase custom SMTP provider: SMTP host `smtp.resend.com`, port `465` (SSL) or `587` (STARTTLS), username `resend`, password your Resend API key, and sender address on a verified Resend domain. This avoids relying on Supabase's built-in mailer limits; wait for a rate-limited request to reset before retrying.
+   - Leave verification and password-reset emails on Supabase Auth's built-in email service. Resend is used only by the Cloudflare Worker for contribution receipts. Supabase's built-in email service has rate limits; if one is reached, wait for it to reset before retrying.
 5. Start the Cloudflare Worker and Vite in separate terminals:
 
    ```sh
@@ -74,7 +74,7 @@ For an existing Supabase project, re-run [`schema.sql`](./schema.sql) to create 
    ```
 
    Keep the Supabase secret key, Lipila API key, webhook secret, and Resend API key in Worker secrets only. Never use them in `VITE_*` variables or browser code. Since the Supabase secret key was shared in chat, rotate it in the Supabase dashboard before setting the Worker secret.
-2. Configure the same Supabase Auth and Resend SMTP settings as above. In Supabase Realtime settings, enable `profiles` and `contributions` for the `supabase_realtime` publication so payment confirmations can notify members live.
+2. Leave Supabase Auth email delivery on its built-in service. In Supabase Realtime settings, enable `profiles` and `contributions` for the `supabase_realtime` publication so payment confirmations can notify members live.
 3. Connect the GitHub repository to Cloudflare Workers, or deploy with:
 
    ```sh
