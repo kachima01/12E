@@ -67,6 +67,20 @@ async function getContribution(env, reference) {
   return rows?.[0] || null;
 }
 
+async function getContributionByProviderReference(env, providerReference) {
+  const details = await supabaseRequest(
+    env,
+    `/rest/v1/contribution_payment_details?provider_reference=eq.${encodeURIComponent(providerReference)}&select=contribution_id`,
+  );
+  const contributionId = details?.[0]?.contribution_id;
+  if (!contributionId) return null;
+  const rows = await supabaseRequest(
+    env,
+    `/rest/v1/contributions?id=eq.${encodeURIComponent(contributionId)}&select=id,user_id,amount,currency,payment_reference,status,receipt_sent_at`,
+  );
+  return rows?.[0] || null;
+}
+
 function randomReference() {
   return `12E-${crypto.randomUUID().replaceAll("-", "").slice(0, 20).toUpperCase()}`;
 }
@@ -75,7 +89,7 @@ async function createCheckout(request, env) {
   const auth = await authenticate(request, env);
   if (!auth) return json({ error: "Please sign in again to continue." }, 401);
   if (!env.LIPILA_CHECKOUT_URL || !env.LIPILA_API_KEY) {
-    return json({ error: "Lipila checkout is not configured yet. Ask the class admin to finish payment setup." }, 503);
+    return json({ error: "Lipila collection is not configured yet. Ask the class admin to finish payment setup." }, 503);
   }
   let gatewayUrl;
   try {
@@ -140,45 +154,58 @@ async function createCheckout(request, env) {
   }
 
   const requestUrl = new URL(request.url);
-  const checkoutPayload = {
+  const collectionPayload = {
+    referenceId: reference,
     amount,
+    narration: "12E reunion contribution",
+    accountNumber: localPhone.startsWith("0") ? `260${localPhone.slice(1)}` : `260${localPhone}`,
     currency: "ZMW",
-    reference,
-    customer: { name: profile.full_name, email: auth.user.email, phone: payerPhone },
-    return_url: `${requestUrl.origin}/?payment=return`,
-    webhook_url: `${requestUrl.origin}/api/webhooks/lipila`,
+    email: auth.user.email,
+    referenceData: reference,
   };
 
-  let gatewayResponse;
+  let lipilaResponse;
   try {
-    gatewayResponse = await fetch(gatewayUrl, {
+    lipilaResponse = await fetch(gatewayUrl, {
       method: "POST",
       headers: {
-        authorization: `Bearer ${env.LIPILA_API_KEY}`,
+        accept: "application/json",
+        "x-api-key": env.LIPILA_API_KEY,
         "content-type": "application/json",
+        callbackUrl: `${requestUrl.origin}/api/webhooks/lipila`,
       },
-      body: JSON.stringify(checkoutPayload),
+      body: JSON.stringify(collectionPayload),
     });
   } catch (error) {
-    console.error("Lipila checkout request failed", error);
+    console.error("Lipila collection request failed", error);
     await markCheckoutRejected(env, reference);
     return json({ error: "Lipila could not be reached. Please try again." }, 502);
   }
 
-  const providerBody = await gatewayResponse.json().catch(() => null);
-  const checkoutUrl = providerBody?.checkout_url || providerBody?.checkoutUrl;
-  let parsedCheckoutUrl;
-  try {
-    parsedCheckoutUrl = new URL(checkoutUrl);
-  } catch {
-    parsedCheckoutUrl = null;
-  }
-  if (!gatewayResponse.ok || parsedCheckoutUrl?.protocol !== "https:") {
-    console.error("Lipila checkout rejected", gatewayResponse.status);
+  const providerBody = await lipilaResponse.json().catch(() => null);
+  const providerStatus = String(providerBody?.status || "").toLowerCase();
+  if (!lipilaResponse.ok || !providerBody || !["pending", "successful"].includes(providerStatus)) {
+    console.error("Lipila collection rejected", lipilaResponse.status);
     await markCheckoutRejected(env, reference);
-    return json({ error: "Lipila did not return a valid secure checkout link." }, 502);
+    return json({ error: providerBody?.message || "Lipila could not start this mobile-money payment." }, 502);
   }
-  return json({ checkoutUrl: parsedCheckoutUrl.toString(), reference }, 201);
+
+  const providerReference = String(providerBody.referenceId || reference).trim();
+  await supabaseRequest(
+    env,
+    `/rest/v1/contribution_payment_details?contribution_id=eq.${encodeURIComponent(contribution.id)}`,
+    {
+      method: "PATCH",
+      headers: { prefer: "return=minimal" },
+      body: JSON.stringify({ provider_reference: providerReference }),
+    },
+  );
+  return json({
+    reference,
+    providerReference,
+    status: providerStatus,
+    message: "Approve the mobile-money prompt on your phone. The contribution is added after Lipila confirms payment.",
+  }, 201);
 }
 
 async function markCheckoutRejected(env, reference) {
@@ -348,15 +375,15 @@ async function handlePaymentWebhook(request, env) {
   ) {
     return json({ error: "Webhook timestamp is outside the five-minute tolerance." }, 401);
   }
-  if (
-    !(await verifyLipilaSignature(
-      env.LIPILA_WEBHOOK_SECRET,
-      webhookId,
-      timestamp,
-      rawBodyBytes,
-      signatures,
-    ))
-  ) {
+  const signingSecrets = [env.LIPILA_WEBHOOK_SECRET, env.LIPILA_WEBHOOK_SECRET_PREVIOUS].filter(Boolean);
+  let signatureIsValid = false;
+  for (const secret of signingSecrets) {
+    if (await verifyLipilaSignature(secret, webhookId, timestamp, rawBodyBytes, signatures)) {
+      signatureIsValid = true;
+      break;
+    }
+  }
+  if (!signatureIsValid) {
     return json({ error: "Invalid webhook signature." }, 401);
   }
 
@@ -368,36 +395,41 @@ async function handlePaymentWebhook(request, env) {
   }
   if (await wasWebhookProcessed(env, webhookId)) return json({ ok: true, duplicate: true });
 
-  const eventType = String(event.type || "");
-  if (eventType !== "transaction.completed") {
-    await markWebhookProcessed(env, webhookId, eventType || "unknown");
-    return json({ ok: true, ignored: true });
-  }
-  const transaction = event.data;
-  if (!transaction || typeof transaction !== "object") {
-    return json({ error: "Missing transaction data." }, 400);
-  }
-  const status = String(transaction.status || event.status || "completed").toLowerCase();
-  if (!["success", "successful", "completed"].includes(status)) {
+  const eventType = String(event.type || event.typeName || "collection.callback");
+  const transactionType = String(event.type || "Collection").toLowerCase();
+  if (transactionType !== "collection") {
     await markWebhookProcessed(env, webhookId, eventType);
     return json({ ok: true, ignored: true });
   }
-  const reference = String(
-    transaction.reference ||
-      transaction.merchant_reference ||
-      transaction.external_reference ||
-      transaction.metadata?.reference ||
-      "",
-  ).trim();
-  if (!reference) return json({ error: "Missing payment reference." }, 400);
+  const status = String(event.status || "").toLowerCase();
+  const providerReference = String(event.referenceId || "").trim();
+  const internalReference = String(event.identifier || event.referenceData || "").trim();
+  if (!providerReference && !internalReference) return json({ error: "Missing Lipila collection reference." }, 400);
 
-  const contribution = await getContribution(env, reference);
+  const contribution =
+    (internalReference ? await getContribution(env, internalReference) : null) ||
+    (providerReference ? await getContributionByProviderReference(env, providerReference) : null) ||
+    (providerReference ? await getContribution(env, providerReference) : null);
   if (!contribution) return json({ error: "Contribution not found." }, 404);
-  const paidAmount = Number(transaction.amount);
+  if (status === "failed") {
+    await supabaseRequest(
+      env,
+      `/rest/v1/contributions?id=eq.${encodeURIComponent(contribution.id)}&status=eq.pending`,
+      {
+        method: "PATCH",
+        headers: { prefer: "return=minimal" },
+        body: JSON.stringify({ status: "rejected" }),
+      },
+    );
+    await markWebhookProcessed(env, webhookId, eventType);
+    return json({ ok: true, failed: true });
+  }
+  if (status !== "successful") return json({ error: "Unsupported Lipila collection status." }, 400);
+  const paidAmount = Number(event.amount);
   if (!Number.isFinite(paidAmount) || Math.round(paidAmount * 100) !== Math.round(Number(contribution.amount) * 100)) {
     return json({ error: "Payment amount does not match the contribution." }, 400);
   }
-  if (transaction.currency && String(transaction.currency).toUpperCase() !== "ZMW") {
+  if (event.currency && String(event.currency).toUpperCase() !== "ZMW") {
     return json({ error: "Payment currency does not match the contribution." }, 400);
   }
   if (contribution.status !== "confirmed") {
@@ -480,8 +512,8 @@ async function routeApi(request, env) {
     try {
       return await createCheckout(request, env);
     } catch (error) {
-      console.error("Could not create Lipila checkout", error);
-      return json({ error: "Could not start checkout. Please try again." }, 500);
+      console.error("Could not create Lipila collection", error);
+      return json({ error: "Could not start the mobile-money payment. Please try again." }, 500);
     }
   }
   if (url.pathname === "/api/webhooks/lipila" && request.method === "POST") {

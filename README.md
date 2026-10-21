@@ -41,24 +41,25 @@ The current profile trigger approves new sign-ups automatically. If you want the
 
 The app defaults to ZMW and suggests K500, but members can enter another amount and the Zambian mobile number to charge. The entered amount is the contribution credited to the reunion fund; the member-facing checkout tells the payer to cover any Lipila collection fee. The member target is K500 per approved classmate, so the overall target is the current approved-classmate count multiplied by K500. Successful payments trigger an in-app realtime confirmation for the payer and a class-wide contribution notification.
 
-Checkout is created by the Worker at `POST /api/payment/checkout`; payment is counted only after the signed Lipila webhook confirms it. The Worker adapter sends this JSON to `LIPILA_CHECKOUT_URL`:
+The Worker starts a mobile-money collection at `POST /api/payment/checkout`; Lipila sends a prompt to the member's phone, and the contribution is counted only after a signed Lipila callback confirms it. Set `LIPILA_CHECKOUT_URL` to the mobile-money collection endpoint for the matching Lipila environment. The endpoint shown in the [Lipila mobile money collections guide](https://docs.lipila.io/docs/collections/momocollections.html) is `https://api.lipila.dev/api/v1/collections/mobile-money`. Use the test or live API key that matches the environment configured for the merchant account.
 
 ```json
 {
+  "referenceId": "12E-...",
   "amount": 500,
+  "narration": "12E reunion contribution",
+  "accountNumber": "260971234567",
   "currency": "ZMW",
-  "reference": "12E-...",
-  "customer": { "name": "Member name", "email": "member@example.com", "phone": "+260971234567" },
-  "return_url": "https://your-site.example/?payment=return",
-  "webhook_url": "https://your-site.example/api/webhooks/lipila"
+  "email": "member@example.com",
+  "referenceData": "12E-..."
 }
 ```
 
-The configured Lipila endpoint must accept a bearer API key and return `{ "checkout_url": "https://..." }`. The webhook adapter verifies Lipila's Standard Webhooks-style `webhook-id`, `webhook-timestamp`, and `webhook-signature` headers, including `v1` signatures and multiple signatures during key rotation. It expects a base64-encoded 32-byte signing secret (or the `whsec_`-prefixed form), rejects timestamps more than five minutes from the current time, verifies the raw request body, and records processed webhook IDs in `lipila_webhook_events` to make retries idempotent. For `transaction.completed` events it currently reads `data.reference` (also accepts `merchant_reference`, `external_reference`, or `metadata.reference`), `data.amount`, and optional `data.currency`. The amount must be the credited contribution amount in ZMW, excluding any collection fee paid by the member. Configure Lipila to make the payer responsible for that fee. Confirm the exact transaction payload, amount units, and checkout request/response against your Lipila merchant API documentation before enabling live payments.
+The Worker sends the API key in the `x-api-key` header and the callback URL in the `callbackUrl` header. Lipila's [collection API guide](https://docs.lipila.io/docs/collections/momocollections.html) documents an initial `Pending` response and a callback with top-level `referenceId`, `amount`, `currency`, `status`, and `type` fields. The handler matches the callback to the provider reference, verifies the amount and currency, credits only a successful collection, and rejects a pending contribution after a signed failed callback. Callback signatures use Lipila's Standard Webhooks-style `webhook-id`, `webhook-timestamp`, and `webhook-signature` headers, including `v1` signatures and multiple signatures during key rotation. The webhook secret must be a base64-encoded 32-byte key (or the `whsec_`-prefixed form); the Worker validates the raw request body and rejects timestamps more than five minutes from the current time. During the 24-hour key-rotation overlap, set the previous secret as the optional `LIPILA_WEBHOOK_SECRET_PREVIOUS` Worker secret; remove it after the overlap ends.
 
-For an existing Supabase project, re-run [`schema.sql`](./schema.sql) to create the `lipila_webhook_events` idempotency table.
+For an existing Supabase project, re-run [`schema.sql`](./schema.sql) to create the `lipila_webhook_events` table and `provider_reference` column used to match Lipila callbacks to contributions.
 
-For an existing Supabase project, re-run [`schema.sql`](./schema.sql) to create the private `contribution_payment_details` table. It migrates any earlier `payer_phone` column data, removes that column from member-visible contribution rows, and keeps payer numbers accessible only to the backend service key.
+For an existing Supabase project, re-run [`schema.sql`](./schema.sql) to create the private `contribution_payment_details` table. It migrates any earlier `payer_phone` column data, removes that column from member-visible contribution rows, and keeps payer numbers and provider references accessible only to the backend service key. Confirm with Lipila that the account's collection fees are charged separately from the amount sent in the payment request; the app credits the requested amount only.
 
 ## Cloudflare deployment
 

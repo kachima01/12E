@@ -25,8 +25,15 @@ create table if not exists public.contributions (
 create table if not exists public.contribution_payment_details (
   contribution_id uuid primary key references public.contributions (id) on delete cascade,
   payer_phone text not null check (payer_phone ~ '^\+260[79][0-9]{8}$'),
+  provider_reference text,
   created_at timestamptz not null default now()
 );
+
+alter table public.contribution_payment_details
+  add column if not exists provider_reference text;
+create unique index if not exists contribution_payment_provider_reference_idx
+  on public.contribution_payment_details (provider_reference)
+  where provider_reference is not null;
 
 create table if not exists public.lipila_webhook_events (
   webhook_id text primary key,

@@ -30,7 +30,7 @@ import { isSupabaseConfigured, supabase, workerRequest } from "./lib/supabase";
 
 type AuthMode = "login" | "signup" | "reset" | "update_password";
 type Page = "overview" | "activity" | "people" | "admin";
-type CheckoutResponse = { checkoutUrl: string; reference: string };
+type CheckoutResponse = { reference: string; status: string; message: string };
 const MEMBER_TARGET = 500;
 
 const currency = new Intl.NumberFormat("en-ZM", {
@@ -1154,23 +1154,18 @@ function ContributionDialog({
       setError("Enter a valid Zambian mobile number, such as 0971234567 or +260971234567.");
       return;
     }
-    const popup = window.open("about:blank", "_blank");
-    if (!popup) {
-      setError("Allow pop-ups to open Lipila mobile money checkout.");
-      return;
-    }
     setWorking(true);
     setError("");
     try {
-      const checkout = await workerRequest<CheckoutResponse>("/api/payment/checkout", {
+      const collection = await workerRequest<CheckoutResponse>("/api/payment/checkout", {
         amount: num,
         phone: normalizedPhone,
       });
-      if (!checkout.checkoutUrl || !checkout.reference) throw new Error("Incomplete checkout response.");
-      popup.location.href = checkout.checkoutUrl;
+      if (!collection.reference || !collection.status || !collection.message) {
+        throw new Error("Lipila returned an incomplete collection response.");
+      }
       onSuccess();
     } catch (err) {
-      popup.close();
       const msg = err instanceof Error ? err.message : "Could not start payment.";
       setError(msg);
       onError(msg);
@@ -1241,7 +1236,7 @@ function ContributionDialog({
             </div>
             <div style={{ display: "flex", flexDirection: "column" }}>
               <strong style={{ fontSize: 11, color: "#1c221e" }}>Pay securely with Lipila</strong>
-              <span style={{ fontSize: 9.5, color: "#8d958e" }}>Airtel, MTN, or Zamtel · fee paid by you</span>
+              <span style={{ fontSize: 9.5, color: "#8d958e" }}>Airtel, MTN, or Zamtel · approve the prompt on your phone</span>
             </div>
           </div>
 
@@ -1254,11 +1249,11 @@ function ContributionDialog({
 
           {error && <div style={{ color: "#9e463e", fontSize: 11, marginBottom: 10 }}>{error}</div>}
           <p style={{ color: "#8d958e", fontSize: 9, lineHeight: 1.5, margin: "0 0 12px" }}>
-            Lipila will confirm the payment to your mobile number. The amount you enter is credited to the fund; any collection fee is additional and paid by you at checkout.
+            Lipila will send a mobile-money prompt to your number. Approve it on your phone; the amount is added to the fund only after Lipila confirms payment. Any provider fees are separate from the contribution.
           </p>
 
           <button className="btn-auth-submit" style={{ width: "100%" }} type="submit" disabled={working}>
-            {working ? "Connecting to Lipila…" : "Continue to Payment"} <ArrowRight size={15} />
+            {working ? "Sending payment prompt…" : "Send Payment Prompt"} <ArrowRight size={15} />
           </button>
         </form>
       </div>
