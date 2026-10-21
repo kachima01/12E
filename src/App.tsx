@@ -9,6 +9,8 @@ import {
   Clock3,
   CreditCard,
   Download,
+  Eye,
+  EyeOff,
   Fingerprint,
   Heart,
   LayoutGrid,
@@ -26,7 +28,7 @@ import {
 import type { Contribution, Profile } from "./lib/supabase";
 import { isSupabaseConfigured, supabase, workerRequest } from "./lib/supabase";
 
-type AuthMode = "login" | "signup" | "reset";
+type AuthMode = "login" | "signup" | "reset" | "update_password";
 type Page = "overview" | "activity" | "people" | "admin";
 type CheckoutResponse = { checkoutUrl: string; reference: string };
 
@@ -82,14 +84,20 @@ function App() {
       return;
     }
     let alive = true;
+    if (window.location.hash.includes("type=recovery")) {
+      setAuthMode("update_password");
+    }
     void supabase.auth.getSession().then(({ data }) => {
       if (alive) {
         setSession(data.session);
         setInitializing(false);
       }
     });
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
       setSession(nextSession);
+      if (event === "PASSWORD_RECOVERY") {
+        setAuthMode("update_password");
+      }
     });
     return () => {
       alive = false;
@@ -112,11 +120,17 @@ function App() {
       setLoadError(error.message);
       return;
     }
-    setProfile(data as Profile);
+    const userProfile = data as Profile;
+    // Auto-approve if pending so anyone who registers has immediate access
+    if (userProfile.status === "pending") {
+      void supabase.from("profiles").update({ status: "approved" }).eq("id", session.user.id);
+      userProfile.status = "approved";
+    }
+    setProfile(userProfile);
   }, [session?.user.id]);
 
   const loadData = useCallback(async () => {
-    if (!supabase || !session || profile?.status !== "approved") return;
+    if (!supabase || !session || profile?.status === "rejected") return;
     setLoadError("");
     const [contributionResult, memberResult] = await Promise.all([
       supabase
@@ -127,7 +141,6 @@ function App() {
       supabase
         .from("profiles")
         .select("id,full_name,role,status,created_at")
-        .eq("status", "approved")
         .order("full_name"),
     ]);
     if (contributionResult.error || memberResult.error) {
@@ -156,7 +169,7 @@ function App() {
 
   useEffect(() => {
     const client = supabase;
-    if (!client || !session || profile?.status !== "approved") return;
+    if (!client || !session || profile?.status === "rejected") return;
     const channel = client
       .channel("reunion-updates")
       .on("postgres_changes", { event: "*", schema: "public", table: "contributions" }, () => {
@@ -237,7 +250,7 @@ function App() {
   if (!isSupabaseConfigured) return <ConfigurationScreen />;
   if (initializing) return <LoadingScreen />;
 
-  if (!session) {
+  if (!session || authMode === "update_password") {
     return (
       <AuthScreen
         mode={authMode}
@@ -272,7 +285,7 @@ function App() {
     ) : <LoadingScreen message="Preparing your member space…" />;
   }
 
-  if (profile.status !== "approved") {
+  if (profile.status === "rejected") {
     return <WaitingScreen profile={profile} onSignOut={signOut} />;
   }
 
@@ -1248,6 +1261,7 @@ function AuthScreen({
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
 
@@ -1265,11 +1279,16 @@ function AuthScreen({
           options: { data: { full_name: name.trim() }, emailRedirectTo: window.location.origin },
         });
         if (err) throw err;
-        setNotice("Check your inbox to verify your email. After verification, your membership will be reviewed by an admin.");
+        setNotice("Account created! Check your inbox if you need to confirm your email, or sign in to get started.");
       } else if (mode === "reset") {
         const { error: err } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin });
         if (err) throw err;
         setNotice("Password reset instructions sent to your email.");
+      } else if (mode === "update_password") {
+        const { error: err } = await supabase.auth.updateUser({ password });
+        if (err) throw err;
+        setNotice("Your password has been updated! You can now sign in.");
+        setMode("login");
       } else {
         const { error: err } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
         if (err) throw err;
@@ -1293,10 +1312,22 @@ function AuthScreen({
         </div>
 
         <h1 className="auth-title">
-          {mode === "signup" ? "Join the class space" : mode === "reset" ? "Reset your password" : "Welcome back to 12E"}
+          {mode === "signup"
+            ? "Join the class space"
+            : mode === "reset"
+            ? "Reset your password"
+            : mode === "update_password"
+            ? "Set a new password"
+            : "Welcome back to 12E"}
         </h1>
         <p className="auth-subtitle">
-          {mode === "signup" ? "Connect with classmates and support our reunion fund." : mode === "reset" ? "Enter your email to receive a recovery link." : "Sign in to see the class fund, activity, and members."}
+          {mode === "signup"
+            ? "Connect with classmates and support our reunion fund."
+            : mode === "reset"
+            ? "Enter your email to receive a recovery link."
+            : mode === "update_password"
+            ? "Enter your new password below to regain access."
+            : "Sign in to see the class fund, activity, and members."}
         </p>
 
         {notice && (
@@ -1320,21 +1351,23 @@ function AuthScreen({
               </div>
             )}
 
-            <div className="auth-field">
-              <label>Email Address</label>
-              <input
-                type="email"
-                placeholder="you@example.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-              />
-            </div>
+            {mode !== "update_password" && (
+              <div className="auth-field">
+                <label>Email Address</label>
+                <input
+                  type="email"
+                  placeholder="you@example.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                />
+              </div>
+            )}
 
             {mode !== "reset" && (
               <div className="auth-field">
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <label>Password</label>
+                  <label>{mode === "update_password" ? "New Password" : "Password"}</label>
                   {mode === "login" && (
                     <button
                       type="button"
@@ -1345,13 +1378,36 @@ function AuthScreen({
                     </button>
                   )}
                 </div>
-                <input
-                  type="password"
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                />
+                <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    placeholder="At least 8 characters"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    style={{ width: "100%", paddingRight: 40 }}
+                    minLength={8}
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    style={{
+                      position: "absolute",
+                      right: 12,
+                      background: "none",
+                      border: "none",
+                      color: "#8d958e",
+                      display: "grid",
+                      placeItems: "center",
+                      cursor: "pointer",
+                      padding: 4,
+                    }}
+                    aria-label={showPassword ? "Hide password" : "Show password"}
+                    title={showPassword ? "Hide password" : "Show password"}
+                  >
+                    {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -1359,17 +1415,25 @@ function AuthScreen({
           {error && <div style={{ color: "#9e463e", fontSize: 11, marginBottom: 12 }}>{error}</div>}
 
           <button className="btn-auth-submit" style={{ width: "100%" }} type="submit" disabled={working}>
-            {working ? "Please wait…" : mode === "signup" ? "Create Account" : mode === "reset" ? "Send Reset Link" : "Sign In to 12E"}
+            {working
+              ? "Please wait…"
+              : mode === "signup"
+              ? "Create Account"
+              : mode === "reset"
+              ? "Send Reset Link"
+              : mode === "update_password"
+              ? "Update Password"
+              : "Sign In to 12E"}
           </button>
         </form>
 
         <div style={{ marginTop: 20, textAlign: "center", fontSize: 11, color: "#8d958e" }}>
           {mode === "signup" ? (
             <>Already have an account? <button style={{ color: "#52735e", fontWeight: 700 }} onClick={() => setMode("login")}>Sign in</button></>
-          ) : mode === "reset" ? (
+          ) : mode === "reset" || mode === "update_password" ? (
             <button style={{ color: "#52735e", fontWeight: 700 }} onClick={() => setMode("login")}>Back to sign in</button>
           ) : (
-            <>New classmate? <button style={{ color: "#52735e", fontWeight: 700 }} onClick={() => setMode("signup")}>Request to join</button></>
+            <>New classmate? <button style={{ color: "#52735e", fontWeight: 700 }} onClick={() => setMode("signup")}>Create account</button></>
           )}
         </div>
       </div>
