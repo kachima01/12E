@@ -504,12 +504,7 @@ function App() {
       {showContribute && (
         <ContributionDialog
           onClose={() => setShowContribute(false)}
-          onError={(message) => setToast(message)}
-          onSuccess={() => {
-            setShowContribute(false);
-            setToast("Payment started. Your chosen amount will be added to the fund after Lipila confirms it.");
-            void loadData();
-          }}
+          onSuccess={() => { void loadData(); }}
         />
       )}
 
@@ -1129,18 +1124,52 @@ function AdminPageView({
 ───────────────────────────────────────────────────────────── */
 function ContributionDialog({
   onClose,
-  onError,
   onSuccess,
 }: {
   onClose: () => void;
-  onError: (msg: string) => void;
   onSuccess: () => void;
 }) {
   const [amount, setAmount] = useState("500");
   const [phone, setPhone] = useState("");
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
+  const [statusWarning, setStatusWarning] = useState("");
+  const [phase, setPhase] = useState<"form" | "starting" | "processing" | "confirmed" | "failed" | "waiting">("form");
+  const [paymentReference, setPaymentReference] = useState("");
+  const pollingRef = useRef(false);
   const amounts = [250, 500, 1000, 2000];
+
+  async function waitForPayment(reference: string) {
+    setPhase("processing");
+    const deadline = Date.now() + 120_000;
+    while (pollingRef.current && Date.now() < deadline) {
+      try {
+        const result = await workerRequest<{ status: Contribution["status"] }>(
+          `/api/payment/status?reference=${encodeURIComponent(reference)}`,
+        );
+        if (!pollingRef.current) return;
+        setStatusWarning("");
+        if (result.status === "confirmed") {
+          setPhase("confirmed");
+          onSuccess();
+          return;
+        }
+        if (result.status === "rejected") {
+          setPhase("failed");
+          return;
+        }
+      } catch (err) {
+        setStatusWarning(err instanceof Error ? err.message : "Could not check payment status.");
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 2500));
+    }
+    if (pollingRef.current) setPhase("waiting");
+  }
+
+  function closeDialog() {
+    pollingRef.current = false;
+    onClose();
+  }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -1151,11 +1180,14 @@ function ContributionDialog({
     }
     const normalizedPhone = normalizeZambianPhone(phone);
     if (!normalizedPhone) {
-      setError("Enter a valid Zambian mobile number, such as 0971234567 or +260971234567.");
+      setError("Enter all 9 digits of your Zambian mobile number.");
       return;
     }
     setWorking(true);
     setError("");
+    setStatusWarning("");
+    setPhase("starting");
+    pollingRef.current = true;
     try {
       const collection = await workerRequest<CheckoutResponse>("/api/payment/checkout", {
         amount: num,
@@ -1164,20 +1196,21 @@ function ContributionDialog({
       if (!collection.reference || !collection.status || !collection.message) {
         throw new Error("Lipila returned an incomplete collection response.");
       }
-      onSuccess();
+      setPaymentReference(collection.reference);
+      await waitForPayment(collection.reference);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Could not start payment.";
       setError(msg);
-      onError(msg);
+      setPhase("form");
     } finally {
       setWorking(false);
     }
   }
 
   return (
-    <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget && phase !== "starting" && phase !== "processing") closeDialog(); }}>
       <div className="modal-window">
-        <button className="modal-close-btn" onClick={onClose} aria-label="Close">
+        <button className="modal-close-btn" onClick={closeDialog} aria-label="Close" disabled={phase === "starting"}>
           <X size={16} />
         </button>
 
@@ -1185,9 +1218,47 @@ function ContributionDialog({
           <Heart size={20} />
         </div>
 
-        <h2 className="modal-title">Contribute to 12E Fund</h2>
-        <p className="modal-sub">Choose an amount that works for you. Every contribution helps bring our class back together.</p>
+        <h2 className="modal-title">
+          {phase === "confirmed" ? "Payment confirmed" : phase === "failed" ? "Payment not completed" : phase === "processing" || phase === "starting" ? "Payment processing" : phase === "waiting" ? "Still waiting for confirmation" : "Contribute to 12E Fund"}
+        </h2>
+        <p className="modal-sub">
+          {phase === "confirmed"
+            ? "Lipila confirmed your payment. Your contribution has been added to the reunion fund."
+            : phase === "failed"
+              ? "Lipila reported that this payment did not go through. No contribution was added."
+              : phase === "processing" || phase === "starting"
+                ? "Approve the payment request on your mobile-money phone. We’re waiting for Lipila to confirm the result."
+                : phase === "waiting"
+                  ? "The payment is still pending. Check your phone and wait for the mobile-money prompt or callback."
+                  : "Choose an amount that works for you. Every contribution helps bring our class back together."}
+        </p>
 
+        {phase === "starting" || phase === "processing" ? (
+          <div role="status" aria-live="polite" style={{ background: "#f8f8f5", borderRadius: 14, padding: "24px 16px", textAlign: "center", marginTop: 18 }}>
+            <div style={{ width: 34, height: 34, border: "3px solid #dce8df", borderTopColor: "#52735e", borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 14px" }} />
+            <strong style={{ color: "#1c221e", fontSize: 14 }}>Amount: {currency.format(Number(amount) || 0)}</strong>
+            <p style={{ color: "#8d958e", fontSize: 11, lineHeight: 1.6, margin: "8px 0 0" }}>
+              {phase === "starting" ? "Sending the payment request to Lipila…" : "Payment prompt sent. Approve it on your phone."}
+            </p>
+          </div>
+        ) : phase === "confirmed" || phase === "failed" ? (
+          <div role="status" aria-live="polite" style={{ background: phase === "confirmed" ? "#e6eee8" : "#fbeae8", borderRadius: 14, padding: "20px 16px", textAlign: "center", marginTop: 18 }}>
+            <div style={{ width: 42, height: 42, borderRadius: "50%", background: phase === "confirmed" ? "#52735e" : "#9e463e", color: "white", display: "grid", placeItems: "center", margin: "0 auto 12px" }}>
+              {phase === "confirmed" ? <Check size={22} /> : <X size={22} />}
+            </div>
+            <strong style={{ color: "#1c221e", fontSize: 15 }}>
+              {phase === "confirmed" ? `${currency.format(Number(amount) || 0)} added` : "Payment failed"}
+            </strong>
+          </div>
+        ) : phase === "waiting" ? (
+          <div role="status" aria-live="polite" style={{ background: "#f8f8f5", borderRadius: 14, padding: "18px 16px", textAlign: "center", marginTop: 18 }}>
+            <Clock3 size={25} color="#52735e" />
+            <p style={{ color: "#8d958e", fontSize: 11, lineHeight: 1.6, margin: "8px 0 0" }}>
+              No final callback received yet. Your contribution remains pending and won’t be counted until confirmed.
+            </p>
+            {statusWarning && <p style={{ color: "#9e463e", fontSize: 11, lineHeight: 1.5, margin: "8px 0 0" }}>{statusWarning}</p>}
+          </div>
+        ) : (
         <form onSubmit={submit}>
           <div className="amount-input-box">
             <span className="amount-prefix">K</span>
@@ -1218,16 +1289,29 @@ function ContributionDialog({
 
           <div className="auth-field" style={{ marginBottom: 16 }}>
             <label htmlFor="payer-phone">Mobile money number to charge</label>
-            <input
-              id="payer-phone"
-              type="tel"
-              inputMode="tel"
-              autoComplete="tel"
-              placeholder="097 123 4567"
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              required
-            />
+            <div style={{ display: "flex", alignItems: "center", border: "1px solid #e8e6df", borderRadius: 10, background: "#fff", padding: "0 12px" }}>
+              <span aria-hidden="true" style={{ color: "#52735e", fontSize: 13, fontWeight: 700, paddingRight: 9, borderRight: "1px solid #e8e6df" }}>+260</span>
+              <input
+                id="payer-phone"
+                type="tel"
+                inputMode="numeric"
+                autoComplete="tel-national"
+                placeholder="971234567"
+                aria-label="Nine-digit Zambian mobile number"
+                value={phone}
+                maxLength={9}
+                pattern="[79][0-9]{8}"
+                onChange={(e) => {
+                  let digits = e.target.value.replace(/\D/g, "");
+                  if (digits.startsWith("260")) digits = digits.slice(3);
+                  if (digits.startsWith("0")) digits = digits.slice(1);
+                  setPhone(digits.slice(0, 9));
+                }}
+                style={{ border: 0, outline: 0, boxShadow: "none", flex: 1, minWidth: 0, paddingLeft: 10 }}
+                required
+              />
+            </div>
+            <span style={{ color: "#8d958e", fontSize: 10 }}>Enter 9 digits after +260. A leading 0 is ignored.</span>
           </div>
 
           <div style={{ background: "#f8f8f5", borderRadius: 14, padding: "12px 14px", display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
@@ -1253,9 +1337,25 @@ function ContributionDialog({
           </p>
 
           <button className="btn-auth-submit" style={{ width: "100%" }} type="submit" disabled={working}>
-            {working ? "Sending payment prompt…" : "Send Payment Prompt"} <ArrowRight size={15} />
+            Send Payment Prompt <ArrowRight size={15} />
           </button>
         </form>
+        )}
+        {phase === "waiting" && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 16 }}>
+            <button className="btn-auth-submit" type="button" onClick={() => { pollingRef.current = true; void waitForPayment(paymentReference); }}>
+              Check again
+            </button>
+            <button type="button" onClick={closeDialog} style={{ border: "1px solid #e8e6df", borderRadius: 12, fontWeight: 700, fontSize: 12 }}>
+              Close
+            </button>
+          </div>
+        )}
+        {(phase === "confirmed" || phase === "failed") && (
+          <button className="btn-auth-submit" style={{ width: "100%", marginTop: 16 }} type="button" onClick={closeDialog}>
+            Done
+          </button>
+        )}
       </div>
     </div>
   );

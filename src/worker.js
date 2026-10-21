@@ -208,6 +208,18 @@ async function createCheckout(request, env) {
   }, 201);
 }
 
+async function getPaymentStatus(request, env) {
+  const auth = await authenticate(request, env);
+  if (!auth) return json({ error: "Please sign in again to check payment status." }, 401);
+  const reference = new URL(request.url).searchParams.get("reference")?.trim();
+  if (!reference) return json({ error: "Payment reference is required." }, 400);
+  const contribution = await getContribution(env, reference);
+  if (!contribution || contribution.user_id !== auth.user.id) {
+    return json({ error: "Payment was not found." }, 404);
+  }
+  return json({ status: contribution.status });
+}
+
 async function markCheckoutRejected(env, reference) {
   await supabaseRequest(
     env,
@@ -514,6 +526,14 @@ async function routeApi(request, env) {
     } catch (error) {
       console.error("Could not create Lipila collection", error);
       return json({ error: "Could not start the mobile-money payment. Please try again." }, 500);
+    }
+  }
+  if (url.pathname === "/api/payment/status" && request.method === "GET") {
+    try {
+      return await getPaymentStatus(request, env);
+    } catch (error) {
+      console.error("Could not retrieve Lipila payment status", error);
+      return json({ error: "Could not check payment status. Please try again." }, 500);
     }
   }
   if (url.pathname === "/api/webhooks/lipila" && request.method === "POST") {
