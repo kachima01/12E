@@ -41,6 +41,13 @@ create table if not exists public.lipila_webhook_events (
   processed_at timestamptz not null default now()
 );
 
+create table if not exists public.class_messages (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.profiles (id) on delete cascade,
+  message text not null check (char_length(btrim(message)) between 1 and 500),
+  created_at timestamptz not null default now()
+);
+
 -- Move payment numbers from an earlier contribution-column version into the
 -- private table, then remove them from the member-visible table.
 do $$
@@ -111,11 +118,33 @@ as $$
   );
 $$;
 
+create or replace function public.protect_profile_privileges()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if (new.role is distinct from old.role or new.status is distinct from old.status)
+     and not public.is_approved_admin() then
+    raise exception 'Only an approved admin can change member role or status.';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists protect_profile_privileges on public.profiles;
+create trigger protect_profile_privileges
+  before update on public.profiles
+  for each row execute procedure public.protect_profile_privileges();
+
 alter table public.profiles enable row level security;
 alter table public.contributions enable row level security;
 alter table public.contribution_payment_details enable row level security;
 alter table public.lipila_webhook_events enable row level security;
+alter table public.class_messages enable row level security;
 revoke all on public.contribution_payment_details, public.lipila_webhook_events from anon, authenticated;
+revoke all on public.class_messages from anon, authenticated;
 
 drop policy if exists "Members can read approved profiles" on public.profiles;
 create policy "Members can read approved profiles"
@@ -132,6 +161,12 @@ create policy "Admins can update membership status"
   using (public.is_approved_admin())
   with check (role = 'member' or public.is_approved_admin());
 
+drop policy if exists "Members can update their own profile name" on public.profiles;
+create policy "Members can update their own profile name"
+  on public.profiles for update to authenticated
+  using (id = (select auth.uid()))
+  with check (id = (select auth.uid()));
+
 drop policy if exists "Approved members can read confirmed contributions" on public.contributions;
 create policy "Approved members can read confirmed contributions"
   on public.contributions for select to authenticated
@@ -147,12 +182,48 @@ create policy "Admins can update contributions"
   using (public.is_approved_admin())
   with check (public.is_approved_admin());
 
+drop policy if exists "Approved members can read class messages" on public.class_messages;
+create policy "Approved members can read class messages"
+  on public.class_messages for select to authenticated
+  using (public.is_approved_member());
+
+drop policy if exists "Approved members can post their own messages" on public.class_messages;
+create policy "Approved members can post their own messages"
+  on public.class_messages for insert to authenticated
+  with check (user_id = (select auth.uid()) and public.is_approved_member());
+
 grant usage on schema public to authenticated;
-grant select, update on public.profiles to authenticated;
+grant select on public.profiles to authenticated;
+revoke update on public.profiles from authenticated;
+grant update (full_name, status) on public.profiles to authenticated;
+grant select, insert on public.class_messages to authenticated;
 revoke select, update on public.contributions from authenticated;
 grant select (id, user_id, amount, currency, payment_reference, status, method, created_at, confirmed_at)
   on public.contributions to authenticated;
 grant update (status, confirmed_at) on public.contributions to authenticated;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'contributions'
+  ) then
+    alter publication supabase_realtime add table public.contributions;
+  end if;
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'profiles'
+  ) then
+    alter publication supabase_realtime add table public.profiles;
+  end if;
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'class_messages'
+  ) then
+    alter publication supabase_realtime add table public.class_messages;
+  end if;
+end;
+$$;
 
 -- After creating your account and verifying its email, run this once in SQL Editor:
 -- update public.profiles set role = 'admin', status = 'approved'

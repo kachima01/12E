@@ -5,7 +5,6 @@ import {
   Bell,
   Check,
   CheckCircle2,
-  ChevronDown,
   Clock3,
   CreditCard,
   Download,
@@ -18,9 +17,11 @@ import {
   Menu,
   MessageSquare,
   Plus,
+  Radio,
   Search,
   Settings,
   ShieldCheck,
+  Smartphone,
   Sparkles,
   Users,
   X,
@@ -29,8 +30,15 @@ import type { Contribution, Profile } from "./lib/supabase";
 import { isSupabaseConfigured, supabase, workerRequest } from "./lib/supabase";
 
 type AuthMode = "login" | "signup" | "reset" | "update_password";
-type Page = "overview" | "activity" | "people" | "admin";
+type Page = "overview" | "activity" | "people" | "messages" | "settings" | "admin";
 type CheckoutResponse = { reference: string; status: string; message: string };
+type ClassMessage = {
+  id: string;
+  user_id: string;
+  message: string;
+  created_at: string;
+  profiles: { full_name: string } | null;
+};
 const MEMBER_TARGET = 500;
 
 const currency = new Intl.NumberFormat("en-ZM", {
@@ -74,6 +82,7 @@ function App() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [contributions, setContributions] = useState<Contribution[]>([]);
   const [members, setMembers] = useState<Profile[]>([]);
+  const [messages, setMessages] = useState<ClassMessage[]>([]);
   const [loadError, setLoadError] = useState("");
   const [showContribute, setShowContribute] = useState(false);
   const [busyId, setBusyId] = useState("");
@@ -164,6 +173,24 @@ function App() {
     membersRef.current = approvedProfiles;
   }, [profile?.status, session]);
 
+  const loadMessages = useCallback(async () => {
+    if (!supabase || !session || profile?.status === "rejected") return;
+    const { data, error } = await supabase
+      .from("class_messages")
+      .select("id,user_id,message,created_at,profiles(full_name)")
+      .order("created_at", { ascending: false })
+      .limit(100);
+    if (error) {
+      setLoadError(error.message);
+      return;
+    }
+    const messageItems = (data ?? []).map((item) => ({
+      ...item,
+      profiles: Array.isArray(item.profiles) ? item.profiles[0] ?? null : item.profiles,
+    }));
+    setMessages(messageItems as ClassMessage[]);
+  }, [profile?.status, session]);
+
   useEffect(() => {
     void loadProfile();
   }, [loadProfile]);
@@ -203,11 +230,18 @@ function App() {
         void loadData();
         void loadProfile();
       })
+      .on("postgres_changes", { event: "*", schema: "public", table: "class_messages" }, () => {
+        void loadMessages();
+      })
       .subscribe();
     return () => {
       void client.removeChannel(channel);
     };
-  }, [loadData, loadProfile, profile?.status, session]);
+  }, [loadData, loadMessages, loadProfile, profile?.status, session]);
+
+  useEffect(() => {
+    void loadMessages();
+  }, [loadMessages]);
 
   useEffect(() => {
     if (!toast) return;
@@ -237,6 +271,7 @@ function App() {
       setProfile(null);
       setContributions([]);
       setMembers([]);
+      setMessages([]);
       setPage("overview");
     }
   }
@@ -343,6 +378,15 @@ function App() {
           </button>
 
           <button
+            className={`sidebar-nav-btn ${page === "messages" ? "sidebar-nav-btn--active" : ""}`}
+            onClick={() => { setPage("messages"); setMobileNavOpen(false); }}
+            title="Class messages"
+            aria-label="Class messages"
+          >
+            <MessageSquare size={19} />
+          </button>
+
+          <button
             className={`sidebar-nav-btn ${page === "people" ? "sidebar-nav-btn--active" : ""}`}
             onClick={() => { setPage("people"); setMobileNavOpen(false); }}
             title="Classmates Directory"
@@ -367,8 +411,8 @@ function App() {
         {/* Bottom Sidebar Icons: Settings, Logout, Avatar */}
         <div className="sidebar-bottom-group">
           <button
-            className="sidebar-nav-btn"
-            onClick={() => setToast("12E David Livingstone Secondary — Class of 2017")}
+            className={`sidebar-nav-btn ${page === "settings" ? "sidebar-nav-btn--active" : ""}`}
+            onClick={() => { setPage("settings"); setMobileNavOpen(false); }}
             title="Settings & Info"
             aria-label="Settings"
           >
@@ -436,7 +480,7 @@ function App() {
             <button
               className="header-action-circle"
               aria-label="Messages"
-              onClick={() => setToast("12E Class Group Chat — Reunion coming up!")}
+              onClick={() => setPage("messages")}
             >
               <MessageSquare size={18} />
               <i className="dot-alert" />
@@ -468,11 +512,13 @@ function App() {
             joiningMembers={joiningMembers}
             totalTarget={totalTarget}
             confirmed={confirmed}
+            contributions={confirmed}
             ownConfirmed={myConfirmed}
             pending={myPending}
             onContribute={() => setShowContribute(true)}
             onViewActivity={() => setPage("activity")}
             onViewPeople={() => setPage("people")}
+            onViewSettings={() => setPage("settings")}
           />
         )}
 
@@ -486,6 +532,32 @@ function App() {
 
         {page === "people" && (
           <PeoplePageView members={members} contributions={confirmed} />
+        )}
+
+        {page === "messages" && (
+          <MessagesPage
+            messages={messages}
+            ownId={profile.id}
+            onSend={async (message) => {
+              if (!supabase) throw new Error("Supabase is not configured.");
+              const { error } = await supabase.from("class_messages").insert({
+                user_id: profile.id,
+                message,
+              });
+              if (error) throw error;
+              await loadMessages();
+            }}
+          />
+        )}
+
+        {page === "settings" && (
+          <SettingsPage
+            profile={profile}
+            onProfileUpdated={async () => {
+              await loadProfile();
+              setToast("Profile updated.");
+            }}
+          />
         )}
 
         {page === "admin" && admin && (
@@ -531,26 +603,63 @@ function OverviewBentoView({
   joiningMembers,
   totalTarget,
   confirmed,
+  contributions,
   ownConfirmed,
   pending,
   onContribute,
   onViewActivity,
   onViewPeople,
+  onViewSettings,
 }: {
   profile: Profile;
   raised: number;
   joiningMembers: number;
   totalTarget: number;
   confirmed: Contribution[];
+  contributions: Contribution[];
   ownConfirmed: Contribution[];
   pending: Contribution[];
   onContribute: () => void;
   onViewActivity: () => void;
   onViewPeople: () => void;
+  onViewSettings: () => void;
 }) {
   const ownTotal = ownConfirmed.reduce((sum, item) => sum + Number(item.amount), 0);
   const goalPercent = totalTarget > 0 ? Math.min(100, Math.round((raised / totalTarget) * 100)) : 0;
   const recentTransfers = confirmed.slice(0, 3);
+  const monthlyTotals = Array.from({ length: 6 }, (_, index) => {
+    const date = new Date();
+    date.setDate(1);
+    date.setMonth(date.getMonth() - (5 - index));
+    return {
+      label: new Intl.DateTimeFormat("en-ZM", { month: "short" }).format(date),
+      year: date.getFullYear(),
+      month: date.getMonth(),
+      amount: 0,
+    };
+  });
+  const firstChartMonth = monthlyTotals[0];
+  let cumulative = contributions.reduce((total, item) => {
+    const date = new Date(item.confirmed_at || item.created_at);
+    return date.getFullYear() < firstChartMonth.year ||
+      (date.getFullYear() === firstChartMonth.year && date.getMonth() < firstChartMonth.month)
+      ? total + Number(item.amount)
+      : total;
+  }, 0);
+  contributions.forEach((item) => {
+    const date = new Date(item.confirmed_at || item.created_at);
+    const bucket = monthlyTotals.find((value) => value.year === date.getFullYear() && value.month === date.getMonth());
+    if (bucket) bucket.amount += Number(item.amount);
+  });
+  const chartPoints = monthlyTotals.map((bucket, index) => {
+    cumulative += bucket.amount;
+    return {
+      x: (index / Math.max(1, monthlyTotals.length - 1)) * 540,
+      y: 88 - (cumulative / Math.max(raised, totalTarget, 1)) * 68,
+    };
+  });
+  const chartPath = chartPoints.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
+  const chartArea = `${chartPath} L 540 100 L 0 100 Z`;
 
   return (
     <>
@@ -563,11 +672,13 @@ function OverviewBentoView({
             <span className="stat-bento-value">{currency.format(raised)}</span>
           </div>
           <div className="mini-bar-chart" aria-hidden="true">
-            <div className="mini-bar" style={{ height: "45%" }} />
-            <div className="mini-bar" style={{ height: "90%" }} />
-            <div className="mini-bar" style={{ height: "70%" }} />
-            <div className="mini-bar" style={{ height: "100%" }} />
-            <div className="mini-bar" style={{ height: "55%" }} />
+            {monthlyTotals.map((bucket) => (
+              <div
+                className="mini-bar"
+                key={`${bucket.year}-${bucket.month}`}
+                style={{ height: `${Math.max(8, (bucket.amount / Math.max(...monthlyTotals.map((value) => value.amount), 1)) * 100)}%` }}
+              />
+            ))}
           </div>
         </div>
 
@@ -647,9 +758,7 @@ function OverviewBentoView({
                 <Check size={11} /> On track
               </span>
             </div>
-            <button className="card-dropdown-select">
-              Monthly <ChevronDown size={14} />
-            </button>
+            <span className="chart-caption">Last 6 months</span>
           </div>
 
           {/* Floating inner pill cards */}
@@ -671,29 +780,17 @@ function OverviewBentoView({
             </div>
           </div>
 
-          {/* Continuous Undulating Dual-Curve SVG Graph */}
-          <div className="balance-chart-wrap" aria-hidden="true">
+          <div className="balance-chart-wrap" role="img" aria-label={`Contribution progress over the last six months: ${monthlyTotals.map((month) => `${month.label} ${currency.format(month.amount)}`).join(", ")}`}>
             <svg viewBox="0 0 540 100" fill="none" preserveAspectRatio="none">
-              {/* Soft background waveform fill */}
-              <path
-                d="M 0 85 C 30 85, 45 70, 75 70 C 105 70, 115 85, 140 85 C 160 85, 170 50, 195 50 C 220 50, 230 85, 260 85 C 290 85, 305 70, 335 70 C 375 70, 400 60, 440 60 C 480 60, 505 55, 540 55 L 540 100 L 0 100 Z"
-                fill="rgba(82, 115, 94, 0.04)"
-              />
-              {/* Lower faint wave */}
-              <path
-                d="M 0 85 C 30 85, 45 70, 75 70 C 105 70, 115 85, 140 85 C 160 85, 170 50, 195 50 C 220 50, 230 85, 260 85 C 290 85, 305 70, 335 70 C 375 70, 400 60, 440 60 C 480 60, 505 55, 540 55"
-                stroke="#e2e6e3"
-                strokeWidth="2.5"
-                strokeLinecap="round"
-              />
-              {/* Primary sage green continuous spline curve */}
-              <path
-                d="M 0 80 C 40 80, 55 60, 85 60 C 115 60, 125 78, 150 78 C 175 78, 185 45, 210 45 C 235 45, 245 78, 275 78 C 305 78, 320 62, 350 62 C 390 62, 415 54, 460 54 C 500 54, 520 50, 540 50"
-                stroke="#52735e"
-                strokeWidth="2.2"
-                strokeLinecap="round"
-              />
+              <path d={chartArea} fill="rgba(82, 115, 94, 0.08)" />
+              <path d={chartPath} stroke="#52735e" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+              {chartPoints.map((point, index) => (
+                <circle key={index} cx={point.x} cy={point.y} r="3.5" fill="#52735e" />
+              ))}
             </svg>
+            <div className="chart-month-labels" aria-hidden="true">
+              {monthlyTotals.map((month) => <span key={`${month.year}-${month.month}`}>{month.label}</span>)}
+            </div>
           </div>
         </div>
 
@@ -767,51 +864,7 @@ function OverviewBentoView({
             </button>
           </div>
 
-          {/* 3D Angled Stacked Frosted Credit Cards */}
-          <div className="isometric-cards-stage" aria-hidden="true">
-            {/* Bottom charcoal card */}
-            <div className="iso-card iso-card--bot">
-              <span className="iso-card-network">12E REUNION</span>
-              <span className="iso-card-num">DAVID LIVINGSTONE</span>
-              <div className="iso-card-bottom">
-                <span className="iso-card-name">CLASS OF 2017</span>
-                <div className="iso-mastercard-circles">
-                  <span className="iso-circle-red" />
-                  <span className="iso-circle-yellow" />
-                </div>
-              </div>
-            </div>
-
-            {/* Middle deep sage green card */}
-            <div className="iso-card iso-card--mid">
-              <span className="iso-card-network">12E REUNION</span>
-              <span className="iso-card-num">ONE CLASS · ONE HOME</span>
-              <div className="iso-card-bottom">
-                <span className="iso-card-name">K500 CLASS TARGET</span>
-                <div className="iso-mastercard-circles">
-                  <span className="iso-circle-red" />
-                  <span className="iso-circle-yellow" />
-                </div>
-              </div>
-            </div>
-
-            {/* Top frosted translucent mint card */}
-            <div className="iso-card iso-card--top">
-              <span className="iso-card-network">DAVID LIVINGSTONE</span>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: 7, fontWeight: 700 }}>CLASS OF 2017</span>
-                <span style={{ fontSize: 6.5, fontWeight: 600 }}>12E</span>
-              </div>
-              <span className="iso-card-num">STILL OUR CLASS</span>
-              <div className="iso-card-bottom">
-                <span className="iso-card-name">REUNION FUND</span>
-                <div className="iso-mastercard-circles">
-                  <span className="iso-circle-red" />
-                  <span className="iso-circle-yellow" />
-                </div>
-              </div>
-            </div>
-          </div>
+          <MobileMoneyAnimation />
         </div>
 
         {/* Card 2: Your Transfers / Recent Contributions */}
@@ -850,12 +903,212 @@ function OverviewBentoView({
             <p className="security-card-sub">Update your security password</p>
           </div>
 
-          <button className="btn-pill-security" onClick={onViewPeople}>
+          <button className="btn-pill-security" onClick={onViewSettings}>
             Update Your Security
           </button>
         </div>
       </section>
     </>
+  );
+}
+
+function MobileMoneyAnimation() {
+  return (
+    <div className="mobile-money-visual" aria-label="Mobile money payments supported" role="img">
+      <div className="mobile-money-orbit mobile-money-orbit--outer" />
+      <div className="mobile-money-orbit mobile-money-orbit--inner" />
+      <div className="mobile-money-phone">
+        <div className="mobile-money-phone-speaker" />
+        <Smartphone size={52} strokeWidth={1.35} />
+        <div className="mobile-money-phone-screen">
+          <span className="mobile-money-screen-check"><Check size={15} /></span>
+          <span>Mobile money</span>
+          <strong>Secure prompt</strong>
+        </div>
+      </div>
+      <div className="mobile-money-bubble mobile-money-bubble--left"><Radio size={17} /> MTN</div>
+      <div className="mobile-money-bubble mobile-money-bubble--right"><Radio size={17} /> Airtel</div>
+      <div className="mobile-money-bubble mobile-money-bubble--bottom">Zamtel</div>
+    </div>
+  );
+}
+
+function MessagesPage({
+  messages,
+  ownId,
+  onSend,
+}: {
+  messages: ClassMessage[];
+  ownId: string;
+  onSend: (message: string) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    const text = draft.trim();
+    if (!text || text.length > 500) {
+      setError("Messages must be between 1 and 500 characters.");
+      return;
+    }
+    setSending(true);
+    setError("");
+    try {
+      await onSend(text);
+      setDraft("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not post your message.");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <section className="subpage-container">
+      <div className="subpage-header-row">
+        <div className="subpage-heading-wrap">
+          <h1>Class messages</h1>
+          <p>Share a reunion thought or leave a message for the class.</p>
+        </div>
+      </div>
+      <div className="subpage-panel message-board-panel">
+        <form className="message-compose" onSubmit={submit}>
+          <label className="settings-label" htmlFor="class-message">Write a message</label>
+          <textarea
+            id="class-message"
+            value={draft}
+            maxLength={500}
+            rows={3}
+            placeholder="What would you like to tell your classmates?"
+            onChange={(event) => setDraft(event.target.value)}
+            required
+          />
+          <div className="message-compose-footer">
+            <span>{draft.length}/500</span>
+            <button className="btn-pill-green" type="submit" disabled={sending || !draft.trim()}>
+              {sending ? "Posting…" : "Post message"} <ArrowRight size={14} />
+            </button>
+          </div>
+          {error && <p className="settings-error" role="alert">{error}</p>}
+        </form>
+        <div className="message-list" aria-live="polite">
+          {messages.length ? messages.map((item) => {
+            const author = item.profiles?.full_name || (item.user_id === ownId ? "You" : "12E classmate");
+            return (
+              <article className="class-message" key={item.id}>
+                <div className="c-avatar-chip">{initials(author)}</div>
+                <div className="class-message-content">
+                  <div className="class-message-meta">
+                    <strong>{item.user_id === ownId ? "You" : author}</strong>
+                    <time dateTime={item.created_at}>{formatDate(item.created_at)}</time>
+                  </div>
+                  <p>{item.message}</p>
+                </div>
+              </article>
+            );
+          }) : <p className="message-empty">No messages yet. Start the conversation!</p>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function SettingsPage({
+  profile,
+  onProfileUpdated,
+}: {
+  profile: Profile;
+  onProfileUpdated: () => Promise<void>;
+}) {
+  const [name, setName] = useState(profile.full_name);
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [nameBusy, setNameBusy] = useState(false);
+  const [passwordBusy, setPasswordBusy] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [error, setError] = useState("");
+
+  async function saveName(event: FormEvent) {
+    event.preventDefault();
+    if (!supabase) return;
+    const value = name.trim();
+    if (value.length < 2 || value.length > 80) {
+      setError("Name must be between 2 and 80 characters.");
+      return;
+    }
+    setNameBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const { error: updateError } = await supabase.from("profiles").update({ full_name: value }).eq("id", profile.id);
+      if (updateError) throw updateError;
+      await onProfileUpdated();
+      setNotice("Your profile name has been updated.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not update your profile.");
+    } finally {
+      setNameBusy(false);
+    }
+  }
+
+  async function changePassword(event: FormEvent) {
+    event.preventDefault();
+    if (!supabase) return;
+    if (password.length < 8) {
+      setError("Use at least 8 characters for your new password.");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError("The password confirmation does not match.");
+      return;
+    }
+    setPasswordBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const { error: updateError } = await supabase.auth.updateUser({ password });
+      if (updateError) throw updateError;
+      setPassword("");
+      setConfirmPassword("");
+      setNotice("Your password has been changed.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not update your password.");
+    } finally {
+      setPasswordBusy(false);
+    }
+  }
+
+  return (
+    <section className="subpage-container">
+      <div className="subpage-header-row">
+        <div className="subpage-heading-wrap">
+          <h1>Profile settings</h1>
+          <p>Manage your 12E profile and account security.</p>
+        </div>
+      </div>
+      <div className="settings-grid">
+        <form className="subpage-panel settings-panel" onSubmit={saveName}>
+          <div className="settings-panel-heading"><Users size={19} /><h2>Profile details</h2></div>
+          <label className="settings-label" htmlFor="profile-name">Name shown to classmates</label>
+          <input id="profile-name" className="settings-input" value={name} maxLength={80} onChange={(event) => setName(event.target.value)} required />
+          <p className="settings-help">Your name is used on the classmate list and message board.</p>
+          <button className="btn-pill-green" type="submit" disabled={nameBusy}>{nameBusy ? "Saving…" : "Save profile"}</button>
+        </form>
+        <form className="subpage-panel settings-panel" onSubmit={changePassword}>
+          <div className="settings-panel-heading"><Fingerprint size={20} /><h2>Change password</h2></div>
+          <label className="settings-label" htmlFor="new-password">New password</label>
+          <input id="new-password" className="settings-input" type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={8} required />
+          <label className="settings-label" htmlFor="confirm-new-password">Confirm new password</label>
+          <input id="confirm-new-password" className="settings-input" type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} minLength={8} required />
+          <p className="settings-help">Use at least 8 characters. Your password is managed securely by Supabase Auth.</p>
+          <button className="btn-pill-green" type="submit" disabled={passwordBusy}>{passwordBusy ? "Updating…" : "Update password"}</button>
+        </form>
+      </div>
+      {notice && <p className="settings-notice" role="status">{notice}</p>}
+      {error && <p className="settings-error" role="alert">{error}</p>}
+    </section>
   );
 }
 
@@ -1314,16 +1567,6 @@ function ContributionDialog({
             <span style={{ color: "#8d958e", fontSize: 10 }}>Enter 9 digits after +260. A leading 0 is ignored.</span>
           </div>
 
-          <div style={{ background: "#f8f8f5", borderRadius: 14, padding: "12px 14px", display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
-            <div style={{ width: 28, height: 28, borderRadius: 8, background: "#52735e", color: "#ffffff", display: "grid", placeItems: "center", fontWeight: 800, fontSize: 13 }}>
-              L
-            </div>
-            <div style={{ display: "flex", flexDirection: "column" }}>
-              <strong style={{ fontSize: 11, color: "#1c221e" }}>Pay securely with Lipila</strong>
-              <span style={{ fontSize: 9.5, color: "#8d958e" }}>Airtel, MTN, or Zamtel · approve the prompt on your phone</span>
-            </div>
-          </div>
-
           <div style={{ background: "#e6eee8", borderRadius: 12, padding: "10px 12px", marginBottom: 12, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
             <span style={{ color: "#52735e", fontSize: 10 }}>Added to the reunion fund after payment confirmation</span>
             <strong style={{ color: "#1c221e", whiteSpace: "nowrap" }}>
@@ -1332,10 +1575,6 @@ function ContributionDialog({
           </div>
 
           {error && <div style={{ color: "#9e463e", fontSize: 11, marginBottom: 10 }}>{error}</div>}
-          <p style={{ color: "#8d958e", fontSize: 9, lineHeight: 1.5, margin: "0 0 12px" }}>
-            Lipila will send a mobile-money prompt to your number. Approve it on your phone; the amount is added to the fund only after Lipila confirms payment. Any provider fees are separate from the contribution.
-          </p>
-
           <button className="btn-auth-submit" style={{ width: "100%" }} type="submit" disabled={working}>
             Send Payment Prompt <ArrowRight size={15} />
           </button>
