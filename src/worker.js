@@ -29,7 +29,9 @@ async function supabaseRequest(env, path, options = {}) {
   if (!response.ok) {
     const detail = await response.text();
     console.error("Supabase request failed", options.operation || path, response.status, detail.slice(0, 500));
-    throw new Error("The member service could not complete this request.");
+    throw new Error(options.operation
+      ? `Payment setup could not complete: ${options.operation}.`
+      : "The member service could not complete this request.");
   }
   if (response.status === 204) return null;
   return response.json();
@@ -56,6 +58,7 @@ async function getProfile(env, userId) {
   const rows = await supabaseRequest(
     env,
     `/rest/v1/profiles?id=eq.${encodeURIComponent(userId)}&select=id,full_name,role,status`,
+    { operation: "verify member profile" },
   );
   return rows?.[0] || null;
 }
@@ -79,6 +82,20 @@ async function checkPaymentResource(env, path) {
   }
 }
 
+async function hasSupabaseServiceAccess(env) {
+  try {
+    const response = await fetch(`${env.SUPABASE_URL.replace(/\/$/, "")}/auth/v1/admin/users?per_page=1`, {
+      headers: {
+        apikey: env.SUPABASE_SECRET_KEY,
+        authorization: `Bearer ${env.SUPABASE_SECRET_KEY}`,
+      },
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function paymentReadiness(env) {
   const supabaseConfigured = Boolean(env.SUPABASE_URL && env.SUPABASE_PUBLISHABLE_KEY && env.SUPABASE_SECRET_KEY);
   const checkoutConfigured = Boolean(env.LIPILA_CHECKOUT_URL && env.LIPILA_API_KEY && env.LIPILA_WEBHOOK_SECRET);
@@ -90,6 +107,7 @@ async function paymentReadiness(env) {
   }
   const database = supabaseConfigured
     ? {
+        serviceKey: await hasSupabaseServiceAccess(env),
         profiles: await checkPaymentResource(env, "/rest/v1/profiles?select=id&limit=1"),
         contributions: await checkPaymentResource(env, "/rest/v1/contributions?select=id&limit=1"),
         paymentDetails: await checkPaymentResource(
@@ -97,7 +115,7 @@ async function paymentReadiness(env) {
           "/rest/v1/contribution_payment_details?select=contribution_id,provider_reference&limit=1",
         ),
       }
-    : { profiles: false, contributions: false, paymentDetails: false };
+    : { serviceKey: false, profiles: false, contributions: false, paymentDetails: false };
   return {
     ready: supabaseConfigured && checkoutConfigured && checkoutUrlValid && Object.values(database).every(Boolean),
     supabaseConfigured,
@@ -206,6 +224,7 @@ async function createCheckout(request, env) {
     await supabaseRequest(env, "/rest/v1/contribution_payment_details", {
       method: "POST",
       headers: { prefer: "return=minimal" },
+      operation: "save payment details",
       body: JSON.stringify({ contribution_id: contribution.id, payer_phone: payerPhone }),
     });
   } catch (error) {
@@ -257,6 +276,7 @@ async function createCheckout(request, env) {
     {
       method: "PATCH",
       headers: { prefer: "return=minimal" },
+      operation: "save Lipila payment reference",
       body: JSON.stringify({ provider_reference: providerReference }),
     },
   );
@@ -588,7 +608,7 @@ async function routeApi(request, env) {
       return await createCheckout(request, env);
     } catch (error) {
       console.error("Checkout setup failed before Lipila collection could be created", error?.message || error, error?.stack || "");
-      return json({ error: "Could not start the mobile-money payment. Please try again." }, 500);
+      return json({ error: error instanceof Error ? error.message : "Could not start the mobile-money payment. Please try again." }, 500);
     }
   }
   if (url.pathname === "/api/payment/status" && request.method === "GET") {
