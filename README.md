@@ -35,7 +35,7 @@ set role = 'admin', status = 'approved'
 where id = (select id from auth.users where email = 'YOUR_ADMIN_EMAIL');
 ```
 
-The current profile trigger approves new sign-ups automatically. If you want the original approval-gated flow, change the profile status default and trigger value in `schema.sql` to `pending`; admins can then approve members in **Admin desk**. Members can see confirmed contribution totals and classmate names; payer phone numbers are kept in a separate backend-only table.
+New sign-ups remain pending until an administrator approves them in **Admin desk**. On an existing database, rerun `schema.sql` to update the profile default and signup trigger; this does not change the status of existing profiles. To send existing non-admin members back for review, first ensure an admin account is configured, then run `update public.profiles set status = 'pending' where role = 'member' and status = 'approved';`. Members can see confirmed contribution totals and classmate names; payer phone numbers are kept in a separate backend-only table.
 
 ## Payment integration
 
@@ -62,6 +62,12 @@ For an existing Supabase project, re-run [`schema.sql`](./schema.sql) to create 
 For an existing Supabase project, re-run [`schema.sql`](./schema.sql) to create the private `contribution_payment_details` table. It migrates any earlier `payer_phone` column data, removes that column from member-visible contribution rows, and keeps payer numbers and provider references accessible only to the backend service key.
 
 Members can update their display name and change their password in **Profile settings**. Class messages are visible to approved members. Realtime contribution confirmations appear as in-app notifications while members are connected.
+
+## Vercel deployment
+
+The frontend can be hosted on Vercel while the Cloudflare Worker remains the only payment API. [`vercel.json`](./vercel.json) rewrites same-origin `/api/*` requests to `https://12e.rabsonkachima01.workers.dev/api/*`; the browser does not call a separate backend origin. Push the change to the branch connected to Vercel and wait for its deployment to finish before testing.
+
+Keep all payment, Supabase secret, webhook, and email credentials configured as Cloudflare Worker secrets as described below. Do not add them to Vercel's `VITE_*` browser environment variables. After the Worker secrets are set, check `https://12e.rabsonkachima01.workers.dev/api/health` and the corresponding `/api/health` path on the Vercel domain. Both should return HTTP 200 with `services.supabase`, `services.lipila`, and `services.resend` set to `true` before testing checkout. The current Worker health check returned `false` for all three integrations, so payment is not ready yet; set its secrets and verify again. Test the Vercel health route first, then perform a small live payment only when ready, and confirm the signed callback updates Supabase.
 
 ## Cloudflare deployment
 

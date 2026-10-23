@@ -1,6 +1,9 @@
-name = "reunion-12e"
+name = "12e"
 main = "src/worker.js"
 compatibility_date = "2025-09-01"
+
+[vars]
+SUPABASE_URL = "https://guctpwlilyhhkqgnvzvd.supabase.co"
 
 [build]
 command = "npm run build"

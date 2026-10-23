@@ -133,16 +133,11 @@ function App() {
       return;
     }
     const userProfile = data as Profile;
-    // Auto-approve if pending so anyone who registers has immediate access
-    if (userProfile.status === "pending") {
-      void supabase.from("profiles").update({ status: "approved" }).eq("id", session.user.id);
-      userProfile.status = "approved";
-    }
     setProfile(userProfile);
   }, [session?.user.id]);
 
   const loadData = useCallback(async () => {
-    if (!supabase || !session || profile?.status === "rejected") return;
+    if (!supabase || !session || profile?.status !== "approved") return;
     setLoadError("");
     const [contributionResult, memberResult] = await Promise.all([
       supabase
@@ -174,7 +169,7 @@ function App() {
   }, [profile?.status, session]);
 
   const loadMessages = useCallback(async () => {
-    if (!supabase || !session || profile?.status === "rejected") return;
+    if (!supabase || !session || profile?.status !== "approved") return;
     const { data, error } = await supabase
       .from("class_messages")
       .select("id,user_id,message,created_at,profiles(full_name)")
@@ -201,7 +196,7 @@ function App() {
 
   useEffect(() => {
     const client = supabase;
-    if (!client || !session || profile?.status === "rejected") return;
+    if (!client || !session || profile?.status !== "approved") return;
     const channel = client
       .channel(`reunion-updates-${session.user.id}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "contributions" }, (payload) => {
@@ -345,8 +340,8 @@ function App() {
     ) : <LoadingScreen message="Preparing your member space…" />;
   }
 
-  if (profile.status === "rejected") {
-    return <WaitingScreen profile={profile} onSignOut={signOut} />;
+  if (profile.status !== "approved") {
+    return <WaitingScreen profile={profile} onSignOut={signOut} onRefresh={loadProfile} />;
   }
 
   const firstName = profile.full_name.trim().split(/\s+/)[0] || "Classmate";
@@ -1837,7 +1832,15 @@ function AuthScreen({
 /* ─────────────────────────────────────────────────────────────
    WAITING / UNDER REVIEW SCREEN
 ───────────────────────────────────────────────────────────── */
-function WaitingScreen({ profile, onSignOut }: { profile: Profile; onSignOut: () => void }) {
+function WaitingScreen({
+  profile,
+  onSignOut,
+  onRefresh,
+}: {
+  profile: Profile;
+  onSignOut: () => void;
+  onRefresh: () => void;
+}) {
   const rejected = profile.status === "rejected";
   return (
     <div className="auth-page-wrap">
@@ -1857,6 +1860,11 @@ function WaitingScreen({ profile, onSignOut }: { profile: Profile; onSignOut: ()
           </span>
           <span style={{ color: "#1c221e" }}>{profile.full_name}</span>
         </div>
+        {!rejected && (
+          <button className="btn-auth-submit" style={{ marginBottom: 10 }} onClick={onRefresh}>
+            Check approval status
+          </button>
+        )}
         <button className="btn-auth-submit" onClick={onSignOut}>
           Sign Out
         </button>

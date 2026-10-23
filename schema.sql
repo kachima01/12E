@@ -5,9 +5,11 @@ create table if not exists public.profiles (
   id uuid primary key references auth.users (id) on delete cascade,
   full_name text not null check (char_length(full_name) between 2 and 80),
   role text not null default 'member' check (role in ('member', 'admin')),
-  status text not null default 'approved' check (status in ('pending', 'approved', 'rejected')),
+  status text not null default 'pending' check (status in ('pending', 'approved', 'rejected')),
   created_at timestamptz not null default now()
 );
+
+alter table public.profiles alter column status set default 'pending';
 
 create table if not exists public.contributions (
   id uuid primary key default gen_random_uuid(),
@@ -81,8 +83,8 @@ set search_path = ''
 as $$
 begin
   insert into public.profiles (id, full_name, status)
-  values (new.id, coalesce(new.raw_user_meta_data ->> 'full_name', 'New member'), 'approved')
-  on conflict (id) do update set status = 'approved';
+  values (new.id, coalesce(new.raw_user_meta_data ->> 'full_name', 'New member'), 'pending')
+  on conflict (id) do nothing;
   return new;
 end;
 $$;
