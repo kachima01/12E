@@ -71,6 +71,13 @@ Keep all payment, Supabase secret, webhook, and email credentials configured as 
 
 ## Cloudflare deployment
 
+For GitHub Actions deployment, add these repository secrets under **Settings → Secrets and variables → Actions**:
+
+- `CLOUDFLARE_API_TOKEN`: the value of an API token with permission to deploy Workers. Cloudflare only shows the token value when it is created; if you no longer have it, create a replacement token.
+- `CLOUDFLARE_ACCOUNT_ID`: the Cloudflare account ID for the account hosting this Worker. Find it in the Cloudflare dashboard under the account's overview.
+
+Do not commit these values or paste them into chat. The deployment workflow uses Node.js 22 and checks that both secrets are configured before calling Wrangler.
+
 1. Set the Worker secrets (Wrangler prompts for each value):
 
    ```sh
