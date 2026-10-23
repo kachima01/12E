@@ -28,7 +28,7 @@ async function supabaseRequest(env, path, options = {}) {
   });
   if (!response.ok) {
     const detail = await response.text();
-    console.error("Supabase request failed", response.status, detail.slice(0, 500));
+    console.error("Supabase request failed", options.operation || path, response.status, detail.slice(0, 500));
     throw new Error("The member service could not complete this request.");
   }
   if (response.status === 204) return null;
@@ -63,6 +63,15 @@ async function getContribution(env, reference) {
   const rows = await supabaseRequest(
     env,
     `/rest/v1/contributions?payment_reference=eq.${encodeURIComponent(reference)}&select=id,user_id,amount,currency,payment_reference,status,receipt_sent_at`,
+  );
+  return rows?.[0] || null;
+}
+
+async function getContributionId(env, reference) {
+  const rows = await supabaseRequest(
+    env,
+    `/rest/v1/contributions?payment_reference=eq.${encodeURIComponent(reference)}&select=id`,
+    { operation: "find newly-created contribution" },
   );
   return rows?.[0] || null;
 }
@@ -127,9 +136,10 @@ async function createCheckout(request, env) {
   const payerPhone = `+260${localPhone}`;
 
   const reference = randomReference();
-  const [contribution] = await supabaseRequest(env, "/rest/v1/contributions?select=id", {
+  const createdContributions = await supabaseRequest(env, "/rest/v1/contributions?select=id", {
     method: "POST",
     headers: { prefer: "return=representation" },
+    operation: "create contribution",
     body: JSON.stringify({
       user_id: auth.user.id,
       amount,
@@ -139,6 +149,12 @@ async function createCheckout(request, env) {
       status: "pending",
     }),
   });
+  // Some PostgREST deployments acknowledge a successful insert with an empty
+  // representation despite `return=representation`. The reference is unique,
+  // so use it to obtain the id instead of treating that response as a failure.
+  const contribution = createdContributions?.[0]?.id
+    ? createdContributions[0]
+    : await getContributionId(env, reference);
   if (!contribution?.id) {
     throw new Error("Could not create the contribution record.");
   }
@@ -185,7 +201,7 @@ async function createCheckout(request, env) {
   const providerBody = await lipilaResponse.json().catch(() => null);
   const providerStatus = String(providerBody?.status || "").toLowerCase();
   if (!lipilaResponse.ok || !providerBody || !["pending", "successful"].includes(providerStatus)) {
-    console.error("Lipila collection rejected", lipilaResponse.status);
+    console.error("Lipila collection rejected", lipilaResponse.status, providerBody?.message || "No response message");
     await markCheckoutRejected(env, reference);
     return json({ error: providerBody?.message || "Lipila could not start this mobile-money payment." }, 502);
   }
@@ -524,7 +540,7 @@ async function routeApi(request, env) {
     try {
       return await createCheckout(request, env);
     } catch (error) {
-      console.error("Could not create Lipila collection", error);
+      console.error("Checkout setup failed before Lipila collection could be created", error?.message || error, error?.stack || "");
       return json({ error: "Could not start the mobile-money payment. Please try again." }, 500);
     }
   }
