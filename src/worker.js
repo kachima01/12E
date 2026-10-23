@@ -105,8 +105,11 @@ async function paymentReadiness(env) {
   const supabaseConfigured = Boolean(env.SUPABASE_URL && env.SUPABASE_PUBLISHABLE_KEY && env.SUPABASE_SECRET_KEY);
   const checkoutConfigured = Boolean(env.LIPILA_CHECKOUT_URL && env.LIPILA_API_KEY && env.LIPILA_WEBHOOK_SECRET);
   let checkoutUrlValid = false;
+  let checkoutEndpoint = null;
   try {
-    checkoutUrlValid = new URL(env.LIPILA_CHECKOUT_URL).protocol === "https:";
+    const url = new URL(env.LIPILA_CHECKOUT_URL);
+    checkoutUrlValid = url.protocol === "https:";
+    checkoutEndpoint = `${url.origin}${url.pathname}`;
   } catch {
     // Report the invalid URL below without leaking its value.
   }
@@ -126,6 +129,7 @@ async function paymentReadiness(env) {
     supabaseConfigured,
     checkoutConfigured,
     checkoutUrlValid,
+    checkoutEndpoint,
     database,
   };
 }
@@ -175,6 +179,11 @@ async function createCheckout(request, env) {
   }
   if (gatewayUrl.protocol !== "https:") {
     return json({ error: "Lipila checkout must use a secure HTTPS endpoint." }, 503);
+  }
+  // Permit configuring the documented Lipila API base URL. The collection
+  // endpoint is appended only when no path was supplied.
+  if (gatewayUrl.pathname === "/") {
+    gatewayUrl.pathname = "/api/v1/collections/mobile-money";
   }
   const profile = await getProfile(env, auth.user.id);
   if (!profile || profile.status !== "approved") {
