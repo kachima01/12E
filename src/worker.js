@@ -68,6 +68,45 @@ async function getContribution(env, reference) {
   return rows?.[0] || null;
 }
 
+async function checkPaymentResource(env, path) {
+  try {
+    const response = await fetch(`${env.SUPABASE_URL.replace(/\/$/, "")}${path}`, {
+      headers: supabaseHeaders(env),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function paymentReadiness(env) {
+  const supabaseConfigured = Boolean(env.SUPABASE_URL && env.SUPABASE_PUBLISHABLE_KEY && env.SUPABASE_SECRET_KEY);
+  const checkoutConfigured = Boolean(env.LIPILA_CHECKOUT_URL && env.LIPILA_API_KEY && env.LIPILA_WEBHOOK_SECRET);
+  let checkoutUrlValid = false;
+  try {
+    checkoutUrlValid = new URL(env.LIPILA_CHECKOUT_URL).protocol === "https:";
+  } catch {
+    // Report the invalid URL below without leaking its value.
+  }
+  const database = supabaseConfigured
+    ? {
+        profiles: await checkPaymentResource(env, "/rest/v1/profiles?select=id&limit=1"),
+        contributions: await checkPaymentResource(env, "/rest/v1/contributions?select=id&limit=1"),
+        paymentDetails: await checkPaymentResource(
+          env,
+          "/rest/v1/contribution_payment_details?select=contribution_id,provider_reference&limit=1",
+        ),
+      }
+    : { profiles: false, contributions: false, paymentDetails: false };
+  return {
+    ready: supabaseConfigured && checkoutConfigured && checkoutUrlValid && Object.values(database).every(Boolean),
+    supabaseConfigured,
+    checkoutConfigured,
+    checkoutUrlValid,
+    database,
+  };
+}
+
 async function getContributionId(env, reference) {
   const rows = await supabaseRequest(
     env,
@@ -530,6 +569,9 @@ async function confirmAsAdmin(request, env) {
 
 async function routeApi(request, env) {
   const url = new URL(request.url);
+  if (url.pathname === "/api/payment/readiness" && request.method === "GET") {
+    return json(await paymentReadiness(env));
+  }
   if (url.pathname === "/api/health" && request.method === "GET") {
     return json({
       ok: true,
