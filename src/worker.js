@@ -266,12 +266,24 @@ async function createCheckout(request, env) {
     return json({ error: "Lipila could not be reached. Please try again." }, 502);
   }
 
-  const providerBody = await lipilaResponse.json().catch(() => null);
+  const providerText = await lipilaResponse.text();
+  let providerBody = null;
+  try {
+    providerBody = providerText ? JSON.parse(providerText) : null;
+  } catch {
+    // Some gateway/proxy errors are not JSON. Use the HTTP status below.
+  }
   const providerStatus = String(providerBody?.status || "").toLowerCase();
   if (!lipilaResponse.ok || !providerBody || !["pending", "successful"].includes(providerStatus)) {
-    console.error("Lipila collection rejected", lipilaResponse.status, providerBody?.message || "No response message");
+    console.error("Lipila collection rejected", lipilaResponse.status, providerBody?.message || providerText.slice(0, 500) || "No response message");
     await markCheckoutRejected(env, reference);
-    return json({ error: providerBody?.message || "Lipila could not start this mobile-money payment." }, 502);
+    const providerMessage = providerBody?.message || {
+      400: "Lipila rejected the payment details. Check the mobile number and amount.",
+      401: "Lipila rejected the API key. Confirm that the API key matches the test or live checkout URL.",
+      403: "Lipila denied access to mobile-money collections for this account.",
+      429: "Lipila is receiving too many requests. Please wait a moment and try again.",
+    }[lipilaResponse.status] || `Lipila could not start this mobile-money payment (HTTP ${lipilaResponse.status}).`;
+    return json({ error: providerMessage }, 502);
   }
 
   const providerReference = String(providerBody.referenceId || reference).trim();
