@@ -37,9 +37,7 @@ async function supabaseRequest(env, path, options = {}) {
 
 async function authenticate(request, env) {
   const accessToken = getBearerToken(request);
-  if (!accessToken || !env.SUPABASE_URL || !env.SUPABASE_PUBLISHABLE_KEY || !env.SUPABASE_SECRET_KEY) {
-    return null;
-  }
+  if (!accessToken) return null;
   const response = await fetch(`${env.SUPABASE_URL.replace(/\/$/, "")}/auth/v1/user`, {
     headers: {
       apikey: env.SUPABASE_PUBLISHABLE_KEY,
@@ -98,6 +96,10 @@ function randomReference() {
 }
 
 async function createCheckout(request, env) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_PUBLISHABLE_KEY || !env.SUPABASE_SECRET_KEY) {
+    console.error("Checkout is missing required Supabase Worker configuration");
+    return json({ error: "Payments are not configured yet. Ask the class admin to complete the payment service setup." }, 503);
+  }
   const auth = await authenticate(request, env);
   if (!auth) return json({ error: "Please sign in again to continue." }, 401);
   if (!env.LIPILA_CHECKOUT_URL || !env.LIPILA_API_KEY) {
