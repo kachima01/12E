@@ -3,6 +3,8 @@ main = "src/worker.js"
 compatibility_date = "2025-09-01"
 
 [vars]
+SUPABASE_JWKS_URL = "https://guctpwlilyhhkqgnvzvd.supabase.co/auth/v1/.well-known/jwks.json"
+SUPABASE_PUBLISHABLE_KEY = "sb_publishable_CAQDcb4sZXMpHfjl0Jk7aw_q_B25iW5"
 SUPABASE_URL = "https://guctpwlilyhhkqgnvzvd.supabase.co"
 
 [build]
