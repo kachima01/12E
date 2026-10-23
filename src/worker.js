@@ -34,7 +34,12 @@ async function supabaseRequest(env, path, options = {}) {
       : "The member service could not complete this request.");
   }
   if (response.status === 204) return null;
-  return response.json();
+  // PostgREST may acknowledge a successful write with an empty body (not only
+  // with HTTP 204). Treat that as a valid result; callers that need a row can
+  // retrieve it using the payment reference.
+  const text = await response.text();
+  if (!text.trim()) return null;
+  return JSON.parse(text);
 }
 
 async function authenticate(request, env) {
