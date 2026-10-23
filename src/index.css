@@ -1330,6 +1330,52 @@ button:focus-visible, input:focus-visible {
   line-height: 1.5;
   margin: 0 0 20px;
 }
+.payment-progress {
+  margin-top: 18px;
+  overflow: hidden;
+  border: 1px solid #dce8df;
+  border-radius: 18px;
+  background: linear-gradient(155deg, #f7faf7, #edf4ee);
+  padding: 16px;
+  text-align: center;
+}
+.payment-progress__amount,
+.payment-progress__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.payment-progress__amount {
+  border-bottom: 1px solid #dce8df;
+  padding-bottom: 12px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.payment-progress__amount strong { color: var(--text-main); font-size: 15px; }
+.payment-progress__pulse { height: 94px; display: flex; align-items: center; justify-content: center; gap: 5px; }
+.payment-progress__phone {
+  width: 55px; height: 55px; display: grid; place-items: center; border-radius: 18px;
+  color: #fff; background: var(--sage-dark); box-shadow: 0 10px 24px rgba(82, 115, 94, .24);
+  animation: payment-phone-pulse 1.8s ease-in-out infinite;
+}
+.payment-progress__pulse > i { width: 4px; height: 4px; border-radius: 50%; background: #9bb4a1; animation: payment-dot-wave 1.2s infinite ease-in-out; }
+.payment-progress__pulse > i:nth-child(3) { animation-delay: .15s; }
+.payment-progress__pulse > i:nth-child(4) { animation-delay: .3s; }
+.payment-progress__headline { display: block; font-size: 15px; color: var(--text-main); }
+.payment-progress > p { color: var(--text-muted); font-size: 11px; line-height: 1.55; margin: 7px auto 16px; max-width: 285px; }
+.payment-progress__steps { text-align: left; display: grid; gap: 10px; border-radius: 12px; background: rgba(255,255,255,.76); padding: 12px; }
+.payment-progress__steps > div { display: flex; align-items: center; gap: 9px; color: #9aa39c; font-size: 11px; font-weight: 650; }
+.payment-progress__steps .is-complete { color: var(--sage-dark); }
+.payment-progress__steps .is-active { color: var(--text-main); }
+.payment-progress__steps .is-active svg { color: var(--sage-dark); animation: payment-status-spin 1.3s linear infinite; }
+.payment-progress__step-dot { width: 14px; height: 14px; border: 1.5px solid #cbd6cd; border-radius: 50%; }
+.payment-progress__footer { margin-top: 13px; color: #7c8b7f; font-size: 10px; }
+.payment-progress__live-dot { display: inline-block; width: 6px; height: 6px; margin-right: 5px; border-radius: 50%; background: #5c9a70; animation: payment-live 1.3s ease-in-out infinite; }
+.payment-progress__warning { color: #9e463e !important; margin-bottom: 0 !important; }
+@keyframes payment-phone-pulse { 50% { transform: translateY(-3px); box-shadow: 0 14px 28px rgba(82,115,94,.34); } }
+@keyframes payment-dot-wave { 50% { transform: translateY(-5px); background: var(--sage-dark); } }
+@keyframes payment-status-spin { to { transform: rotate(360deg); } }
+@keyframes payment-live { 50% { opacity: .28; transform: scale(.8); } }
 .amount-input-box {
   background: var(--card-subtle);
   border: 1px solid var(--border-light);

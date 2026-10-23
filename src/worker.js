@@ -46,7 +46,10 @@ async function authenticate(request, env) {
       authorization: `Bearer ${accessToken}`,
     },
   });
-  if (!response.ok) return null;
+  if (!response.ok) {
+    console.warn("Checkout authentication was rejected by Supabase", response.status);
+    return null;
+  }
   const user = await response.json();
   return user?.id && user?.email ? { user, accessToken } : null;
 }

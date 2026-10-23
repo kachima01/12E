@@ -1384,8 +1384,16 @@ function ContributionDialog({
   const [statusWarning, setStatusWarning] = useState("");
   const [phase, setPhase] = useState<"form" | "starting" | "processing" | "confirmed" | "failed" | "waiting">("form");
   const [paymentReference, setPaymentReference] = useState("");
+  const [processingSeconds, setProcessingSeconds] = useState(0);
   const pollingRef = useRef(false);
   const amounts = [250, 500, 1000, 2000];
+
+  useEffect(() => {
+    if (phase !== "starting" && phase !== "processing") return;
+    setProcessingSeconds(0);
+    const timer = window.setInterval(() => setProcessingSeconds((seconds) => seconds + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [phase]);
 
   async function waitForPayment(reference: string) {
     setPhase("processing");
@@ -1482,12 +1490,33 @@ function ContributionDialog({
         </p>
 
         {phase === "starting" || phase === "processing" ? (
-          <div role="status" aria-live="polite" style={{ background: "#f8f8f5", borderRadius: 14, padding: "24px 16px", textAlign: "center", marginTop: 18 }}>
-            <div style={{ width: 34, height: 34, border: "3px solid #dce8df", borderTopColor: "#52735e", borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 14px" }} />
-            <strong style={{ color: "#1c221e", fontSize: 14 }}>Amount: {currency.format(Number(amount) || 0)}</strong>
-            <p style={{ color: "#8d958e", fontSize: 11, lineHeight: 1.6, margin: "8px 0 0" }}>
-              {phase === "starting" ? "Sending the payment request to Lipila…" : "Payment prompt sent. Approve it on your phone."}
+          <div className="payment-progress" role="status" aria-live="polite">
+            <div className="payment-progress__amount">
+              <span>Payment amount</span>
+              <strong>{currency.format(Number(amount) || 0)}</strong>
+            </div>
+            <div className="payment-progress__pulse" aria-hidden="true">
+              <div className="payment-progress__phone"><Smartphone size={25} /></div>
+              <i /><i /><i />
+            </div>
+            <strong className="payment-progress__headline">
+              {phase === "starting" ? "Securely contacting Lipila" : "Check your mobile-money phone"}
+            </strong>
+            <p>
+              {phase === "starting"
+                ? "We are creating your payment prompt now. Please keep this window open."
+                : `A prompt has been sent to +260 ${phone || "your number"}. Enter your PIN only in the provider prompt.`}
             </p>
+            <div className="payment-progress__steps">
+              <div className="is-complete"><Check size={14} /><span>Request sent</span></div>
+              <div className="is-active"><Radio size={14} /><span>Waiting for approval</span></div>
+              <div><span className="payment-progress__step-dot" /><span>Confirming contribution</span></div>
+            </div>
+            <div className="payment-progress__footer">
+              <span><i className="payment-progress__live-dot" /> Live status check</span>
+              <span>{processingSeconds}s elapsed</span>
+            </div>
+            {statusWarning && <p className="payment-progress__warning">We could not refresh the status: {statusWarning}</p>}
           </div>
         ) : phase === "confirmed" || phase === "failed" ? (
           <div role="status" aria-live="polite" style={{ background: phase === "confirmed" ? "#e6eee8" : "#fbeae8", borderRadius: 14, padding: "20px 16px", textAlign: "center", marginTop: 18 }}>
