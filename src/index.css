@@ -257,6 +257,26 @@ button:focus-visible, input:focus-visible {
   align-items: center;
   gap: 12px;
 }
+.header-contribute-btn {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 18px;
+  border-radius: var(--radius-pill);
+  background: var(--sage-dark);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 750;
+  box-shadow: 0 5px 16px rgba(82, 115, 94, 0.25);
+  transition: transform 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+}
+.header-contribute-btn:hover {
+  background: var(--sage-dark-hover);
+  box-shadow: 0 8px 22px rgba(82, 115, 94, 0.3);
+  transform: translateY(-1px);
+}
 
 .header-search-pill {
   height: 46px;
@@ -692,7 +712,7 @@ button:focus-visible, input:focus-visible {
   padding: 24px 28px;
 }
 .wallet-card-content {
-  max-width: 240px;
+  max-width: 280px;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -729,6 +749,21 @@ button:focus-visible, input:focus-visible {
 .btn-pill-green:hover {
   background: var(--sage-dark-hover);
   transform: translateY(-1px);
+}
+.wallet-contribute-btn {
+  min-height: 46px;
+  padding: 0 22px;
+  gap: 10px;
+  font-size: 13px;
+  box-shadow: 0 8px 22px rgba(82, 115, 94, 0.32);
+}
+.wallet-secure-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
 }
 
 /* Animated mobile money illustration */
@@ -1276,6 +1311,95 @@ button:focus-visible, input:focus-visible {
   background: var(--card-subtle);
   font-size: 9px;
 }
+.audit-panel {
+  display: grid;
+  gap: 16px;
+}
+.audit-intro {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid #dce8df;
+  border-radius: 16px;
+  background: linear-gradient(120deg, #f5f9f5, #ffffff);
+}
+.audit-intro-icon {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 13px;
+  color: var(--sage-dark);
+  background: var(--sage-badge);
+}
+.audit-intro h2 {
+  margin: 0 0 4px;
+  color: var(--text-main);
+  font-size: 14px;
+}
+.audit-intro p,
+.audit-footnote {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+.audit-list {
+  display: grid;
+}
+.audit-entry {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 4px;
+  border-bottom: 1px solid var(--border-light);
+}
+.audit-entry-mark {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--sage-dark);
+  background: var(--sage-light);
+}
+.audit-entry-copy {
+  display: grid;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+.audit-entry-copy strong {
+  color: var(--text-main);
+  font-size: 12px;
+}
+.audit-entry-copy span,
+.audit-entry time,
+.audit-empty {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.audit-entry-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.audit-entry time {
+  flex: 0 0 auto;
+}
+.audit-footnote {
+  padding-top: 2px;
+}
+.audit-empty {
+  margin: 0;
+  padding: 22px 8px;
+  text-align: center;
+  line-height: 1.6;
+}
 
 /* ── Contribution Dialog / Modal ─────────────────────────── */
 .modal-overlay {
@@ -1633,6 +1757,10 @@ button:focus-visible, input:focus-visible {
   .header-search-pill {
     display: none;
   }
+  .header-contribute-btn {
+    min-height: 40px;
+    padding: 0 13px;
+  }
   .settings-grid,
   .message-board-panel {
     grid-template-columns: 1fr;
@@ -1675,6 +1803,16 @@ button:focus-visible, input:focus-visible {
     width: 38px;
     height: 38px;
     flex: 0 0 38px;
+  }
+  .header-contribute-btn {
+    width: 38px;
+    min-height: 38px;
+    flex: 0 0 38px;
+    padding: 0;
+    border-radius: 50%;
+  }
+  .header-contribute-btn span {
+    display: none;
   }
   .header-action-circle i.dot-alert {
     top: 8px;
@@ -1745,6 +1883,14 @@ button:focus-visible, input:focus-visible {
     flex-direction: column;
     align-items: flex-start;
     gap: 16px;
+  }
+  .wallet-card-content {
+    width: 100%;
+    max-width: none;
+  }
+  .wallet-contribute-btn {
+    width: 100%;
+    justify-content: center;
   }
   .mobile-money-visual {
     align-self: center;

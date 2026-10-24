@@ -43,6 +43,24 @@ create table if not exists public.lipila_webhook_events (
   processed_at timestamptz not null default now()
 );
 
+create table if not exists public.admin_audit_log (
+  id bigint generated always as identity primary key,
+  actor_id uuid references public.profiles (id) on delete set null,
+  action text not null check (action in (
+    'membership.approve',
+    'membership.reject',
+    'contribution.confirm',
+    'contribution.reject'
+  )),
+  target_type text not null check (target_type in ('profile', 'contribution')),
+  target_id uuid not null,
+  details jsonb not null default '{}'::jsonb check (jsonb_typeof(details) = 'object'),
+  created_at timestamptz not null default now()
+);
+
+create index if not exists admin_audit_log_created_idx
+  on public.admin_audit_log (created_at desc);
+
 create table if not exists public.class_messages (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references public.profiles (id) on delete cascade,
@@ -107,6 +125,104 @@ as $$
   );
 $$;
 
+create or replace function public.admin_set_member_status(
+  p_actor_id uuid,
+  p_member_id uuid,
+  p_status text
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  previous_status text;
+begin
+  if p_status is null or p_status not in ('approved', 'rejected') then
+    raise exception 'Invalid membership decision.';
+  end if;
+  if auth.uid() is distinct from p_actor_id then
+    raise exception 'Actor does not match the authenticated admin.';
+  end if;
+  if not exists (
+    select 1 from public.profiles
+    where id = p_actor_id and role = 'admin' and status = 'approved'
+  ) then
+    raise exception 'Approved admin access is required.';
+  end if;
+
+  update public.profiles
+  set status = p_status
+  where id = p_member_id and status = 'pending'
+  returning 'pending' into previous_status;
+  if previous_status is null then
+    raise exception 'Membership request is no longer pending.';
+  end if;
+
+  insert into public.admin_audit_log (actor_id, action, target_type, target_id, details)
+  values (
+    p_actor_id,
+    case p_status when 'approved' then 'membership.approve' else 'membership.reject' end,
+    'profile',
+    p_member_id,
+    jsonb_build_object('previous_status', previous_status, 'new_status', p_status)
+  );
+end;
+$$;
+
+create or replace function public.admin_set_contribution_status(
+  p_actor_id uuid,
+  p_contribution_id uuid,
+  p_status text
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  previous_status text;
+begin
+  if p_status is null or p_status not in ('confirmed', 'rejected') then
+    raise exception 'Invalid contribution decision.';
+  end if;
+  if auth.uid() is distinct from p_actor_id then
+    raise exception 'Actor does not match the authenticated admin.';
+  end if;
+  if not exists (
+    select 1 from public.profiles
+    where id = p_actor_id and role = 'admin' and status = 'approved'
+  ) then
+    raise exception 'Approved admin access is required.';
+  end if;
+
+  update public.contributions
+  set status = p_status,
+      confirmed_at = case when p_status = 'confirmed' then now() else confirmed_at end
+  where id = p_contribution_id and status = 'pending'
+  returning 'pending' into previous_status;
+
+  if previous_status is null then
+    if exists (
+      select 1 from public.contributions
+      where id = p_contribution_id and status = p_status
+    ) then
+      return;
+    end if;
+    raise exception 'Contribution is no longer pending.';
+  end if;
+
+  insert into public.admin_audit_log (actor_id, action, target_type, target_id, details)
+  values (
+    p_actor_id,
+    case p_status when 'confirmed' then 'contribution.confirm' else 'contribution.reject' end,
+    'contribution',
+    p_contribution_id,
+    jsonb_build_object('previous_status', previous_status, 'new_status', p_status)
+  );
+end;
+$$;
+
 create or replace function public.is_approved_member()
 returns boolean
 language sql
@@ -144,8 +260,9 @@ alter table public.profiles enable row level security;
 alter table public.contributions enable row level security;
 alter table public.contribution_payment_details enable row level security;
 alter table public.lipila_webhook_events enable row level security;
+alter table public.admin_audit_log enable row level security;
 alter table public.class_messages enable row level security;
-revoke all on public.contribution_payment_details, public.lipila_webhook_events from anon, authenticated;
+revoke all on public.contribution_payment_details, public.lipila_webhook_events, public.admin_audit_log from anon, authenticated;
 revoke all on public.class_messages from anon, authenticated;
 
 drop policy if exists "Members can read approved profiles" on public.profiles;
@@ -184,6 +301,11 @@ create policy "Admins can update contributions"
   using (public.is_approved_admin())
   with check (public.is_approved_admin());
 
+drop policy if exists "Admins can read audit log" on public.admin_audit_log;
+create policy "Admins can read audit log"
+  on public.admin_audit_log for select to authenticated
+  using (public.is_approved_admin());
+
 drop policy if exists "Approved members can read class messages" on public.class_messages;
 create policy "Approved members can read class messages"
   on public.class_messages for select to authenticated
@@ -197,12 +319,19 @@ create policy "Approved members can post their own messages"
 grant usage on schema public to authenticated;
 grant select on public.profiles to authenticated;
 revoke update on public.profiles from authenticated;
-grant update (full_name, status) on public.profiles to authenticated;
+revoke update (status) on public.profiles from authenticated;
+grant update (full_name) on public.profiles to authenticated;
 grant select, insert on public.class_messages to authenticated;
+grant select on public.admin_audit_log to authenticated;
+revoke all on function public.admin_set_member_status(uuid, uuid, text) from public, anon, authenticated;
+revoke all on function public.admin_set_contribution_status(uuid, uuid, text) from public, anon, authenticated;
+grant execute on function public.admin_set_member_status(uuid, uuid, text) to authenticated;
+grant execute on function public.admin_set_contribution_status(uuid, uuid, text) to authenticated;
 revoke select, update on public.contributions from authenticated;
+revoke update (status, confirmed_at) on public.contributions from authenticated;
 grant select (id, user_id, amount, currency, payment_reference, status, method, created_at, confirmed_at)
   on public.contributions to authenticated;
-grant update (status, confirmed_at) on public.contributions to authenticated;
+revoke update on public.contributions from authenticated;
 
 do $$
 begin

@@ -76,64 +76,6 @@ async function getContribution(env, reference) {
   return rows?.[0] || null;
 }
 
-async function checkPaymentResource(env, path) {
-  try {
-    const response = await fetch(`${env.SUPABASE_URL.replace(/\/$/, "")}${path}`, {
-      headers: supabaseHeaders(env),
-    });
-    return response.ok;
-  } catch {
-    return false;
-  }
-}
-
-async function hasSupabaseServiceAccess(env) {
-  try {
-    const response = await fetch(`${env.SUPABASE_URL.replace(/\/$/, "")}/auth/v1/admin/users?per_page=1`, {
-      headers: {
-        apikey: env.SUPABASE_SECRET_KEY,
-        authorization: `Bearer ${env.SUPABASE_SECRET_KEY}`,
-      },
-    });
-    return response.ok;
-  } catch {
-    return false;
-  }
-}
-
-async function paymentReadiness(env) {
-  const supabaseConfigured = Boolean(env.SUPABASE_URL && env.SUPABASE_PUBLISHABLE_KEY && env.SUPABASE_SECRET_KEY);
-  const checkoutConfigured = Boolean(env.LIPILA_CHECKOUT_URL && env.LIPILA_API_KEY && env.LIPILA_WEBHOOK_SECRET);
-  let checkoutUrlValid = false;
-  let checkoutEndpoint = null;
-  try {
-    const url = new URL(env.LIPILA_CHECKOUT_URL);
-    checkoutUrlValid = url.protocol === "https:";
-    checkoutEndpoint = `${url.origin}${url.pathname}`;
-  } catch {
-    // Report the invalid URL below without leaking its value.
-  }
-  const database = supabaseConfigured
-    ? {
-        serviceKey: await hasSupabaseServiceAccess(env),
-        profiles: await checkPaymentResource(env, "/rest/v1/profiles?select=id&limit=1"),
-        contributions: await checkPaymentResource(env, "/rest/v1/contributions?select=id&limit=1"),
-        paymentDetails: await checkPaymentResource(
-          env,
-          "/rest/v1/contribution_payment_details?select=contribution_id,provider_reference&limit=1",
-        ),
-      }
-    : { serviceKey: false, profiles: false, contributions: false, paymentDetails: false };
-  return {
-    ready: supabaseConfigured && checkoutConfigured && checkoutUrlValid && Object.values(database).every(Boolean),
-    supabaseConfigured,
-    checkoutConfigured,
-    checkoutUrlValid,
-    checkoutEndpoint,
-    database,
-  };
-}
-
 async function getContributionId(env, reference) {
   const rows = await supabaseRequest(
     env,
@@ -242,7 +184,7 @@ async function createCheckout(request, env) {
       body: JSON.stringify({ contribution_id: contribution.id, payer_phone: payerPhone }),
     });
   } catch (error) {
-    await markCheckoutRejected(env, reference);
+    await rejectCheckoutSafely(env, reference);
     throw error;
   }
 
@@ -271,7 +213,7 @@ async function createCheckout(request, env) {
     });
   } catch (error) {
     console.error("Lipila collection request failed", error);
-    await markCheckoutRejected(env, reference);
+    await rejectCheckoutSafely(env, reference);
     return json({ error: "Lipila could not be reached. Please try again." }, 502);
   }
 
@@ -285,7 +227,7 @@ async function createCheckout(request, env) {
   const providerStatus = String(providerBody?.status || "").toLowerCase();
   if (!lipilaResponse.ok || !providerBody || !["pending", "successful"].includes(providerStatus)) {
     console.error("Lipila collection rejected", lipilaResponse.status, providerBody?.message || providerText.slice(0, 500) || "No response message");
-    await markCheckoutRejected(env, reference);
+    await rejectCheckoutSafely(env, reference);
     const providerMessage = providerBody?.message || {
       400: "Lipila rejected the payment details. Check the mobile number and amount.",
       401: "Lipila rejected the API key. Confirm that the API key matches the test or live checkout URL.",
@@ -336,6 +278,14 @@ async function markCheckoutRejected(env, reference) {
       body: JSON.stringify({ status: "rejected" }),
     },
   );
+}
+
+async function rejectCheckoutSafely(env, reference) {
+  try {
+    await markCheckoutRejected(env, reference);
+  } catch (error) {
+    console.error("Could not mark failed checkout as rejected", error);
+  }
 }
 
 function decodeWebhookSecret(secret) {
@@ -595,11 +545,19 @@ async function confirmAsAdmin(request, env) {
   if (contribution.status !== "confirmed") {
     await supabaseRequest(
       env,
-      `/rest/v1/contributions?id=eq.${encodeURIComponent(id)}&status=eq.pending`,
+      "/rest/v1/rpc/admin_set_contribution_status",
       {
-        method: "PATCH",
-        headers: { prefer: "return=minimal" },
-        body: JSON.stringify({ status: "confirmed", confirmed_at: new Date().toISOString() }),
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${auth.accessToken}`,
+          prefer: "return=minimal",
+        },
+        operation: "record admin contribution confirmation",
+        body: JSON.stringify({
+          p_actor_id: auth.user.id,
+          p_contribution_id: id,
+          p_status: "confirmed",
+        }),
       },
     );
   }
@@ -608,16 +566,86 @@ async function confirmAsAdmin(request, env) {
     await confirmContribution(env, confirmed);
   } catch (error) {
     console.error("Admin-confirmed receipt delivery failed", error);
-    return json({ error: "The contribution was confirmed, but its email receipt could not be sent." }, 502);
+    return json({
+      ok: true,
+      receiptSent: false,
+      message: "The contribution was confirmed, but email receipt delivery needs configuration.",
+    });
   }
+  return json({ ok: true, receiptSent: true });
+}
+
+async function updateMemberStatusAsAdmin(request, env) {
+  const auth = await authenticate(request, env);
+  if (!auth) return json({ error: "Please sign in again." }, 401);
+  const profile = await getProfile(env, auth.user.id);
+  if (!profile || profile.role !== "admin" || profile.status !== "approved") {
+    return json({ error: "Admin access is required." }, 403);
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: "Invalid request body." }, 400);
+  }
+  const id = String(body.id || "");
+  const status = String(body.status || "");
+  if (!/^[0-9a-f-]{36}$/i.test(id) || !["approved", "rejected"].includes(status)) {
+    return json({ error: "Invalid membership decision." }, 400);
+  }
+
+  await supabaseRequest(env, "/rest/v1/rpc/admin_set_member_status", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${auth.accessToken}`,
+      prefer: "return=minimal",
+    },
+    operation: "record admin membership decision",
+    body: JSON.stringify({
+      p_actor_id: auth.user.id,
+      p_member_id: id,
+      p_status: status,
+    }),
+  });
+  return json({ ok: true });
+}
+
+async function rejectContributionAsAdmin(request, env) {
+  const auth = await authenticate(request, env);
+  if (!auth) return json({ error: "Please sign in again." }, 401);
+  const profile = await getProfile(env, auth.user.id);
+  if (!profile || profile.role !== "admin" || profile.status !== "approved") {
+    return json({ error: "Admin access is required." }, 403);
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: "Invalid request body." }, 400);
+  }
+  const id = String(body.id || "");
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return json({ error: "Invalid contribution." }, 400);
+
+  await supabaseRequest(env, "/rest/v1/rpc/admin_set_contribution_status", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${auth.accessToken}`,
+      prefer: "return=minimal",
+    },
+    operation: "record admin contribution rejection",
+    body: JSON.stringify({
+      p_actor_id: auth.user.id,
+      p_contribution_id: id,
+      p_status: "rejected",
+    }),
+  });
   return json({ ok: true });
 }
 
 async function routeApi(request, env) {
   const url = new URL(request.url);
-  if (url.pathname === "/api/payment/readiness" && request.method === "GET") {
-    return json(await paymentReadiness(env));
-  }
   if (url.pathname === "/api/health" && request.method === "GET") {
     return json({
       ok: true,
@@ -634,7 +662,7 @@ async function routeApi(request, env) {
       return await createCheckout(request, env);
     } catch (error) {
       console.error("Checkout setup failed before Lipila collection could be created", error?.message || error, error?.stack || "");
-      return json({ error: error instanceof Error ? error.message : "Could not start the mobile-money payment. Please try again." }, 500);
+      return json({ error: "We could not prepare your payment. Please try again." }, 500);
     }
   }
   if (url.pathname === "/api/payment/status" && request.method === "GET") {
@@ -659,6 +687,22 @@ async function routeApi(request, env) {
     } catch (error) {
       console.error("Admin contribution confirmation failed", error);
       return json({ error: "Could not confirm the contribution." }, 500);
+    }
+  }
+  if (url.pathname === "/api/admin/contributions/reject" && request.method === "POST") {
+    try {
+      return await rejectContributionAsAdmin(request, env);
+    } catch (error) {
+      console.error("Admin contribution rejection failed", error);
+      return json({ error: "Could not reject the contribution." }, 500);
+    }
+  }
+  if (url.pathname === "/api/admin/members/status" && request.method === "POST") {
+    try {
+      return await updateMemberStatusAsAdmin(request, env);
+    } catch (error) {
+      console.error("Admin membership decision failed", error);
+      return json({ error: "Could not update the membership request." }, 500);
     }
   }
   return json({ error: "Not found." }, 404);

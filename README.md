@@ -61,6 +61,8 @@ For an existing Supabase project, re-run [`schema.sql`](./schema.sql) to create 
 
 For an existing Supabase project, re-run [`schema.sql`](./schema.sql) to create the private `contribution_payment_details` table. It migrates any earlier `payer_phone` column data, removes that column from member-visible contribution rows, and keeps payer numbers and provider references accessible only to the backend service key.
 
+For an existing Supabase project, re-run [`schema.sql`](./schema.sql) to add the admin audit log and its protected database functions. Admin membership decisions and payment confirmations/rejections are written atomically with their audit entry. The audit log is read-only to approved admins; direct client-side status updates are revoked. Deploy the Worker and frontend after applying the schema update.
+
 Members can update their display name and change their password in **Profile settings**. Class messages are visible to approved members. Realtime contribution confirmations appear as in-app notifications while members are connected.
 
 ## Vercel deployment

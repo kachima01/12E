@@ -19,6 +19,7 @@ import {
   Plus,
   Radio,
   Search,
+  ScrollText,
   Settings,
   ShieldCheck,
   Smartphone,
@@ -39,6 +40,15 @@ type ClassMessage = {
   created_at: string;
   profiles: { full_name: string } | null;
 };
+type AdminAuditEntry = {
+  id: number;
+  actor_id: string | null;
+  action: string;
+  target_type: string;
+  target_id: string;
+  details: Record<string, string>;
+  created_at: string;
+};
 const MEMBER_TARGET = 500;
 
 const currency = new Intl.NumberFormat("en-ZM", {
@@ -51,6 +61,23 @@ const formatDate = (date: string) =>
   new Intl.DateTimeFormat("en-ZM", { day: "numeric", month: "short", year: "numeric" }).format(
     new Date(date),
   );
+
+async function fetchAllPages<T>(
+  fetchPage: (from: number, to: number) => PromiseLike<{
+    data: T[] | null;
+    error: { message: string } | null;
+  }>,
+): Promise<T[]> {
+  const pageSize = 1000;
+  const rows: T[] = [];
+  for (let offset = 0; ; offset += pageSize) {
+    const { data, error } = await fetchPage(offset, offset + pageSize - 1);
+    if (error) throw new Error(error.message);
+    const page = data ?? [];
+    rows.push(...page);
+    if (page.length < pageSize) return rows;
+  }
+}
 
 /* 12-petals Sage Sunburst Logo (representing 12E) */
 function SunburstLogo() {
@@ -137,35 +164,43 @@ function App() {
   }, [session?.user.id]);
 
   const loadData = useCallback(async () => {
-    if (!supabase || !session || profile?.status !== "approved") return;
+    const client = supabase;
+    if (!client || !session || profile?.status !== "approved") return;
     setLoadError("");
-    const [contributionResult, memberResult] = await Promise.all([
-      supabase
-        .from("contributions")
-        .select("id,user_id,amount,currency,payment_reference,status,method,created_at,confirmed_at")
-        .order("created_at", { ascending: false })
-        .limit(250),
-      supabase
-        .from("profiles")
-        .select("id,full_name,role,status,created_at")
-        .eq("status", "approved")
-        .order("full_name"),
-    ]);
-    if (contributionResult.error || memberResult.error) {
-      setLoadError(
-        contributionResult.error?.message || memberResult.error?.message || "Could not load reunion data.",
-      );
+    let contributionRows: Contribution[];
+    let approvedProfiles: Profile[];
+    try {
+      [contributionRows, approvedProfiles] = await Promise.all([
+        fetchAllPages((from, to) =>
+          client
+            .from("contributions")
+            .select("id,user_id,amount,currency,payment_reference,status,method,created_at,confirmed_at")
+            .order("created_at", { ascending: false })
+            .order("id", { ascending: false })
+            .range(from, to),
+        ),
+        fetchAllPages((from, to) =>
+          client
+            .from("profiles")
+            .select("id,full_name,role,status,created_at")
+            .eq("status", "approved")
+            .order("full_name")
+            .order("id")
+            .range(from, to),
+        ),
+      ]);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "Could not load reunion data.");
       return;
     }
-    const approvedProfiles = (memberResult.data ?? []) as Profile[];
     const namesById = new Map(approvedProfiles.map((member) => [member.id, member.full_name]));
-    const contributionItems = (contributionResult.data ?? []).map((item) => ({
+    const contributionItems = contributionRows.map((item) => ({
       ...item,
       profiles: { full_name: namesById.get(item.user_id) || "12E classmate" },
     }));
     setContributions(contributionItems as Contribution[]);
-    setMembers(approvedProfiles);
-    membersRef.current = approvedProfiles;
+    setMembers(approvedProfiles as Profile[]);
+    membersRef.current = approvedProfiles as Profile[];
   }, [profile?.status, session]);
 
   const loadMessages = useCallback(async () => {
@@ -245,7 +280,14 @@ function App() {
   }, [toast]);
 
   const confirmed = useMemo(
-    () => contributions.filter((item) => item.status === "confirmed"),
+    () =>
+      contributions
+        .filter((item) => item.status === "confirmed")
+        .sort(
+          (left, right) =>
+            new Date(right.confirmed_at || right.created_at).getTime() -
+            new Date(left.confirmed_at || left.created_at).getTime(),
+        ),
     [contributions],
   );
   const raised = confirmed.reduce((sum, item) => sum + Number(item.amount), 0);
@@ -274,12 +316,14 @@ function App() {
   async function decideMembership(id: string, status: "approved" | "rejected") {
     if (!supabase) return;
     setBusyId(id);
-    const { error } = await supabase.from("profiles").update({ status }).eq("id", id);
-    setBusyId("");
-    if (error) setToast(error.message);
-    else {
+    try {
+      await workerRequest<{ ok: true }>("/api/admin/members/status", { id, status });
       setToast(status === "approved" ? "Member approved." : "Membership request declined.");
       await loadData();
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "Could not update the membership request.");
+    } finally {
+      setBusyId("");
     }
   }
 
@@ -288,13 +332,20 @@ function App() {
     setBusyId(id);
     try {
       if (status === "confirmed") {
-        await workerRequest<{ ok: true }>("/api/admin/contributions/confirm", { id });
+        const result = await workerRequest<{ ok: true; receiptSent?: boolean }>(
+          "/api/admin/contributions/confirm",
+          { id },
+        );
+        setToast(
+          result.receiptSent === false
+            ? "Contribution confirmed. Email receipt delivery needs configuration."
+            : "Contribution confirmed.",
+        );
       } else {
-        const { error } = await supabase.from("contributions").update({ status }).eq("id", id);
-        if (error) throw error;
+        await workerRequest<{ ok: true }>("/api/admin/contributions/reject", { id });
+        setToast("Contribution declined.");
       }
       setBusyId("");
-      setToast(status === "confirmed" ? "Contribution confirmed." : "Contribution declined.");
       await loadData();
     } catch (error) {
       setBusyId("");
@@ -457,6 +508,14 @@ function App() {
           </div>
 
           <div className="dash-header-right">
+            <button
+              className="header-contribute-btn"
+              onClick={() => setShowContribute(true)}
+              aria-label="Contribute to the reunion fund"
+            >
+              <Plus size={16} />
+              <span>Contribute</span>
+            </button>
             {/* Pill Search input with circular black search button */}
             <div className="header-search-pill">
               <input
@@ -666,12 +725,17 @@ function OverviewBentoView({
             <span className="stat-bento-label">Total raised</span>
             <span className="stat-bento-value">{currency.format(raised)}</span>
           </div>
-          <div className="mini-bar-chart" aria-hidden="true">
+          <div
+            className="mini-bar-chart"
+            role="img"
+            aria-label={`Monthly confirmed contribution totals: ${monthlyTotals.map((month) => `${month.label} ${currency.format(month.amount)}`).join(", ")}`}
+          >
             {monthlyTotals.map((bucket) => (
               <div
                 className="mini-bar"
                 key={`${bucket.year}-${bucket.month}`}
                 style={{ height: `${Math.max(8, (bucket.amount / Math.max(...monthlyTotals.map((value) => value.amount), 1)) * 100)}%` }}
+                title={`${bucket.label}: ${currency.format(bucket.amount)} confirmed`}
               />
             ))}
           </div>
@@ -710,8 +774,15 @@ function OverviewBentoView({
         {/* Card 4: Dark Sage Green Activity Card with smooth wavy curve */}
         <div
           className="stat-bento-card stat-bento-card--sage"
+          role="button"
+          tabIndex={0}
           onClick={onViewActivity}
-          style={{ cursor: "pointer" }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              onViewActivity();
+            }
+          }}
           title="View your contribution activity"
         >
           <div className="stat-bento-copy">
@@ -750,7 +821,7 @@ function OverviewBentoView({
             <div className="balance-card-title-group">
               <span className="balance-card-title">Reunion fund progress</span>
               <span className="badge-pill-ontrack">
-                <Check size={11} /> On track
+                <Check size={11} /> {goalPercent >= 100 ? "Goal reached" : goalPercent > 0 ? "In progress" : "Getting started"}
               </span>
             </div>
             <span className="chart-caption">Last 6 months</span>
@@ -775,12 +846,15 @@ function OverviewBentoView({
             </div>
           </div>
 
-          <div className="balance-chart-wrap" role="img" aria-label={`Contribution progress over the last six months: ${monthlyTotals.map((month) => `${month.label} ${currency.format(month.amount)}`).join(", ")}`}>
+          <div className="balance-chart-wrap" role="img" aria-label={`Six-month cumulative confirmed contribution trend. Monthly totals: ${monthlyTotals.map((month) => `${month.label} ${currency.format(month.amount)}`).join(", ")}`}>
             <svg viewBox="0 0 540 100" fill="none" preserveAspectRatio="none">
+              <title>Six-month cumulative confirmed contribution trend</title>
               <path d={chartArea} fill="rgba(82, 115, 94, 0.08)" />
               <path d={chartPath} stroke="#52735e" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
               {chartPoints.map((point, index) => (
-                <circle key={index} cx={point.x} cy={point.y} r="3.5" fill="#52735e" />
+                <circle key={index} cx={point.x} cy={point.y} r="3.5" fill="#52735e">
+                  <title>{`${monthlyTotals[index].label}: ${currency.format(monthlyTotals[index].amount)} confirmed`}</title>
+                </circle>
               ))}
             </svg>
             <div className="chart-month-labels" aria-hidden="true">
@@ -854,9 +928,10 @@ function OverviewBentoView({
             <p className="wallet-card-desc">
               K500 is the class target for each approved member. Add funds using mobile money and help bring 12E back together.
             </p>
-            <button className="btn-pill-green" onClick={onContribute}>
-              Add funds <Plus size={14} />
+            <button className="btn-pill-green wallet-contribute-btn" onClick={onContribute}>
+              Add funds securely <ArrowRight size={16} />
             </button>
+            <span className="wallet-secure-note"><ShieldCheck size={13} /> Secure mobile-money prompt</span>
           </div>
 
           <MobileMoneyAnimation />
@@ -1228,8 +1303,10 @@ function AdminPageView({
   onContribution: (id: string, status: "confirmed" | "rejected") => void;
   onRefresh: () => void;
 }) {
-  const [tab, setTab] = useState<"members" | "contributions">("members");
+  const [tab, setTab] = useState<"members" | "contributions" | "audit">("members");
   const [allProfiles, setAllProfiles] = useState<Profile[]>(members);
+  const [auditEntries, setAuditEntries] = useState<AdminAuditEntry[]>([]);
+  const [auditLoading, setAuditLoading] = useState(false);
   const [adminError, setAdminError] = useState("");
 
   useEffect(() => {
@@ -1239,6 +1316,29 @@ function AdminPageView({
       else setAllProfiles((data ?? []) as Profile[]);
     });
   }, [members]);
+
+  useEffect(() => {
+    if (!supabase) return;
+    let active = true;
+    setAuditLoading(true);
+    void supabase
+      .from("admin_audit_log")
+      .select("id,actor_id,action,target_type,target_id,details,created_at")
+      .order("created_at", { ascending: false })
+      .limit(100)
+      .then(({ data, error }) => {
+        if (!active) return;
+        if (error) {
+          setAdminError(error.message);
+        } else {
+          setAuditEntries((data ?? []) as AdminAuditEntry[]);
+        }
+        setAuditLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [members, contributions]);
 
   const awaitingMembers = allProfiles.filter((m) => m.status === "pending");
   const awaitingPayments = contributions.filter((c) => c.status === "pending");
@@ -1288,11 +1388,58 @@ function AdminPageView({
           >
             Payment Verification <span>{awaitingPayments.length}</span>
           </button>
+          <button
+            className={`admin-tab-btn ${tab === "audit" ? "admin-tab-btn--active" : ""}`}
+            onClick={() => setTab("audit")}
+          >
+            <ScrollText size={14} /> Security &amp; Audit
+          </button>
         </div>
 
         {adminError && <div style={{ color: "#9e463e", marginBottom: 12 }}>{adminError}</div>}
 
-        {tab === "members" ? (
+        {tab === "audit" ? (
+          <section className="audit-panel" aria-labelledby="audit-heading">
+            <div className="audit-intro">
+              <div className="audit-intro-icon"><ShieldCheck size={18} /></div>
+              <div>
+                <h2 id="audit-heading">Admin activity</h2>
+                <p>Membership and payment decisions are recorded with the admin identity and timestamp.</p>
+              </div>
+            </div>
+            {auditLoading ? (
+              <p className="audit-empty">Loading audit history…</p>
+            ) : auditEntries.length ? (
+              <div className="audit-list">
+                {auditEntries.map((entry) => {
+                  const actor = allProfiles.find((member) => member.id === entry.actor_id)?.full_name || "Former admin";
+                  const target = entry.target_type === "profile"
+                    ? allProfiles.find((member) => member.id === entry.target_id)?.full_name || "Member record"
+                    : contributions.find((item) => item.id === entry.target_id)?.profiles?.full_name || "Contribution";
+                  const label: Record<string, string> = {
+                    "membership.approve": "Approved member",
+                    "membership.reject": "Declined membership",
+                    "contribution.confirm": "Confirmed contribution",
+                    "contribution.reject": "Rejected contribution",
+                  };
+                  return (
+                    <article className="audit-entry" key={entry.id}>
+                      <div className="audit-entry-mark"><Check size={14} /></div>
+                      <div className="audit-entry-copy">
+                        <strong>{label[entry.action] || "Admin action"}</strong>
+                        <span>{target} · by {actor}</span>
+                      </div>
+                      <time dateTime={entry.created_at}>{formatDate(entry.created_at)}</time>
+                    </article>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="audit-empty">No admin actions recorded yet. New membership and payment decisions will appear here.</p>
+            )}
+            <p className="audit-footnote">Showing the latest 100 entries. This history is read-only to admins; changes are written by protected database functions.</p>
+          </section>
+        ) : tab === "members" ? (
           awaitingMembers.length ? (
             <div className="contributions-full-list">
               {awaitingMembers.map((member) => (
@@ -1508,9 +1655,19 @@ function ContributionDialog({
                 : `A prompt has been sent to +260 ${phone || "your number"}. Enter your PIN only in the provider prompt.`}
             </p>
             <div className="payment-progress__steps">
-              <div className="is-complete"><Check size={14} /><span>Request sent</span></div>
-              <div className="is-active"><Radio size={14} /><span>Waiting for approval</span></div>
-              <div><span className="payment-progress__step-dot" /><span>Confirming contribution</span></div>
+              {phase === "starting" ? (
+                <>
+                  <div className="is-active"><Radio size={14} /><span>Sending secure request</span></div>
+                  <div><span className="payment-progress__step-dot" /><span>Approve on your phone</span></div>
+                  <div><span className="payment-progress__step-dot" /><span>Confirming contribution</span></div>
+                </>
+              ) : (
+                <>
+                  <div className="is-complete"><Check size={14} /><span>Secure request sent</span></div>
+                  <div className="is-active"><Radio size={14} /><span>Approve on your phone</span></div>
+                  <div><span className="payment-progress__step-dot" /><span>Confirming contribution</span></div>
+                </>
+              )}
             </div>
             <div className="payment-progress__footer">
               <span><i className="payment-progress__live-dot" /> Live status check</span>
