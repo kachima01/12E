@@ -18,6 +18,7 @@ import {
   MessageSquare,
   Plus,
   Radio,
+  RefreshCw,
   Search,
   ScrollText,
   Settings,
@@ -25,6 +26,7 @@ import {
   Smartphone,
   Sparkles,
   Users,
+  Wallet,
   X,
 } from "lucide-react";
 import type { Contribution, Profile } from "./lib/supabase";
@@ -48,6 +50,11 @@ type AdminAuditEntry = {
   target_id: string;
   details: Record<string, string>;
   created_at: string;
+};
+type WalletBalance = {
+  availableBalance: number;
+  currency: string;
+  fetchedAt: string;
 };
 const MEMBER_TARGET = 500;
 
@@ -1303,11 +1310,31 @@ function AdminPageView({
   onContribution: (id: string, status: "confirmed" | "rejected") => void;
   onRefresh: () => void;
 }) {
-  const [tab, setTab] = useState<"members" | "contributions" | "audit">("members");
+  const [tab, setTab] = useState<"members" | "contributions" | "wallet" | "audit">("members");
   const [allProfiles, setAllProfiles] = useState<Profile[]>(members);
   const [auditEntries, setAuditEntries] = useState<AdminAuditEntry[]>([]);
   const [auditLoading, setAuditLoading] = useState(false);
   const [adminError, setAdminError] = useState("");
+  const [walletBalance, setWalletBalance] = useState<WalletBalance | null>(null);
+  const [walletLoading, setWalletLoading] = useState(false);
+  const [walletError, setWalletError] = useState("");
+
+  const fetchWalletBalance = useCallback(async () => {
+    setWalletLoading(true);
+    setWalletError("");
+    try {
+      const data = await workerRequest<WalletBalance>("/api/admin/wallet");
+      setWalletBalance(data);
+    } catch (err) {
+      setWalletError(err instanceof Error ? err.message : "Could not fetch wallet balance.");
+    } finally {
+      setWalletLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void fetchWalletBalance();
+  }, [fetchWalletBalance]);
 
   useEffect(() => {
     if (!supabase) return;
@@ -1389,6 +1416,12 @@ function AdminPageView({
             Payment Verification <span>{awaitingPayments.length}</span>
           </button>
           <button
+            className={`admin-tab-btn ${tab === "wallet" ? "admin-tab-btn--active" : ""}`}
+            onClick={() => setTab("wallet")}
+          >
+            <Wallet size={14} /> Wallet Balance
+          </button>
+          <button
             className={`admin-tab-btn ${tab === "audit" ? "admin-tab-btn--active" : ""}`}
             onClick={() => setTab("audit")}
           >
@@ -1398,7 +1431,95 @@ function AdminPageView({
 
         {adminError && <div style={{ color: "#9e463e", marginBottom: 12 }}>{adminError}</div>}
 
-        {tab === "audit" ? (
+        {tab === "wallet" ? (
+          <section className="wallet-panel" aria-labelledby="wallet-heading">
+            <div className="wallet-card">
+              <div className="wallet-card-header">
+                <div className="wallet-card-icon">
+                  <Wallet size={22} />
+                </div>
+                <div className="wallet-card-title">
+                  <h2 id="wallet-heading">Lipila Wallet</h2>
+                  <span className="wallet-card-label">Live merchant balance</span>
+                </div>
+                <button
+                  className="wallet-refresh-btn"
+                  onClick={() => void fetchWalletBalance()}
+                  disabled={walletLoading}
+                  title="Refresh balance"
+                >
+                  <RefreshCw size={16} className={walletLoading ? "wallet-spin" : ""} />
+                </button>
+              </div>
+
+              {walletError ? (
+                <div className="wallet-error">
+                  <p>{walletError}</p>
+                  <button className="btn-pill-green" onClick={() => void fetchWalletBalance()} disabled={walletLoading}>
+                    Try Again
+                  </button>
+                </div>
+              ) : walletLoading && !walletBalance ? (
+                <div className="wallet-loading">
+                  <div className="wallet-loading-bar" />
+                  <span>Fetching balance from Lipila…</span>
+                </div>
+              ) : walletBalance ? (
+                <>
+                  <div className="wallet-balance-display">
+                    <span className="wallet-currency">{walletBalance.currency}</span>
+                    <span className="wallet-amount">
+                      {new Intl.NumberFormat("en-ZM", {
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2,
+                      }).format(walletBalance.availableBalance)}
+                    </span>
+                  </div>
+                  <div className="wallet-meta">
+                    <div className="wallet-meta-item">
+                      <span className="wallet-meta-label">Available Balance</span>
+                      <span className="wallet-meta-value wallet-meta-live">
+                        <span className="wallet-live-dot" />
+                        Live
+                      </span>
+                    </div>
+                    <div className="wallet-meta-item">
+                      <span className="wallet-meta-label">Last Updated</span>
+                      <span className="wallet-meta-value">
+                        {new Intl.DateTimeFormat("en-ZM", {
+                          day: "numeric",
+                          month: "short",
+                          year: "numeric",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        }).format(new Date(walletBalance.fetchedAt))}
+                      </span>
+                    </div>
+                    <div className="wallet-meta-item">
+                      <span className="wallet-meta-label">Confirmed Contributions</span>
+                      <span className="wallet-meta-value">
+                        {contributions.filter((c) => c.status === "confirmed").length} payments
+                      </span>
+                    </div>
+                    <div className="wallet-meta-item">
+                      <span className="wallet-meta-label">In-App Total (Confirmed)</span>
+                      <span className="wallet-meta-value">
+                        {currency.format(
+                          contributions
+                            .filter((c) => c.status === "confirmed")
+                            .reduce((s, c) => s + Number(c.amount), 0),
+                        )}
+                      </span>
+                    </div>
+                  </div>
+                </>
+              ) : null}
+            </div>
+            <p className="wallet-footnote">
+              This balance is fetched live from the Lipila merchant API. Your API key never leaves the server.
+            </p>
+          </section>
+        ) : tab === "audit" ? (
           <section className="audit-panel" aria-labelledby="audit-heading">
             <div className="audit-intro">
               <div className="audit-intro-icon"><ShieldCheck size={18} /></div>

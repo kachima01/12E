@@ -644,6 +644,60 @@ async function rejectContributionAsAdmin(request, env) {
   return json({ ok: true });
 }
 
+function getLipilaBaseUrl(env) {
+  try {
+    const url = new URL(env.LIPILA_CHECKOUT_URL);
+    return `${url.protocol}//${url.host}`;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchLipilaWalletBalance(request, env) {
+  const auth = await authenticate(request, env);
+  if (!auth) return json({ error: "Please sign in again." }, 401);
+  const profile = await getProfile(env, auth.user.id);
+  if (!profile || profile.role !== "admin" || profile.status !== "approved") {
+    return json({ error: "Admin access is required." }, 403);
+  }
+  if (!env.LIPILA_API_KEY || !env.LIPILA_CHECKOUT_URL) {
+    return json({ error: "Lipila is not configured." }, 503);
+  }
+  const baseUrl = getLipilaBaseUrl(env);
+  if (!baseUrl) {
+    return json({ error: "Lipila checkout URL is invalid." }, 503);
+  }
+  const balanceUrl = `${baseUrl}/api/v1/wallet/balance`;
+  let response;
+  try {
+    response = await fetch(balanceUrl, {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+        "x-api-key": env.LIPILA_API_KEY,
+      },
+    });
+  } catch (error) {
+    console.error("Lipila wallet balance request failed", error);
+    return json({ error: "Could not reach Lipila. Please try again." }, 502);
+  }
+  if (!response.ok) {
+    const detail = await response.text();
+    console.error("Lipila wallet balance rejected", response.status, detail.slice(0, 500));
+    return json({
+      error: response.status === 401
+        ? "Lipila rejected the API key. Verify the key matches your environment."
+        : `Could not retrieve wallet balance (HTTP ${response.status}).`,
+    }, 502);
+  }
+  const body = await response.json();
+  return json({
+    availableBalance: Number(body.availableBalance ?? body.available_balance ?? 0),
+    currency: String(body.currency || "ZMW"),
+    fetchedAt: new Date().toISOString(),
+  });
+}
+
 async function routeApi(request, env) {
   const url = new URL(request.url);
   if (url.pathname === "/api/health" && request.method === "GET") {
@@ -703,6 +757,14 @@ async function routeApi(request, env) {
     } catch (error) {
       console.error("Admin membership decision failed", error);
       return json({ error: "Could not update the membership request." }, 500);
+    }
+  }
+  if (url.pathname === "/api/admin/wallet" && request.method === "GET") {
+    try {
+      return await fetchLipilaWalletBalance(request, env);
+    } catch (error) {
+      console.error("Wallet balance fetch failed", error);
+      return json({ error: "Could not retrieve wallet balance." }, 500);
     }
   }
   return json({ error: "Not found." }, 404);
