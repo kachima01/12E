@@ -1,0 +1,20 @@
+services:
+  app:
+    build: .
+    command: npm run dev -- --host 0.0.0.0
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_PROXY: http://worker:8787
+    volumes:
+      - ./.env.local:/app/.env.local:ro
+    depends_on:
+      - worker
+
+  worker:
+    build: .
+    command: npx wrangler dev --ip 0.0.0.0 --port 8787
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./.dev.vars:/app/.dev.vars:ro

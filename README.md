@@ -25,6 +25,22 @@ A private contribution and classmate portal for David Livingstone Secondary Scho
 
    The Vite development server proxies `/api/*` to Wrangler on port 8787. Add the Worker environment variables below to a local `.dev.vars` file (it is ignored by Git).
 
+### Run the app and Worker with Docker
+
+Docker Compose can run the Vite app and local Wrangler Worker in containers while continuing to use your hosted Supabase project and external Lipila/Resend services.
+
+1. Install Docker Desktop and make sure its Linux containers are running.
+2. Create `.env.local` from `.env.example` and `.dev.vars` from `.dev.vars.example`; enter your Supabase browser settings in the former and Worker settings in the latter. Keep secret keys only in `.dev.vars`.
+3. Build and start both containers:
+
+   ```sh
+   docker compose up --build
+   ```
+
+4. Open `http://localhost:5173`. The app proxies `/api/*` to the Worker container; the Worker is also available at `http://localhost:8787`.
+
+Stop the containers with `Ctrl+C`, or run `docker compose down` in another terminal. Re-run `docker compose up --build` after changing source code or dependencies. The local Worker endpoint is not publicly reachable, so Lipila cannot deliver real callbacks to it without a secure public tunnel; use the hosted Worker for end-to-end payment testing. Docker Compose is for local development and does not replace the existing Cloudflare deployment.
+
 ## First admin
 
 Create an account from the app and verify its email. In the Supabase SQL editor, promote that account:
@@ -111,7 +127,7 @@ The free Workers plan serves the built Vite assets and API from one origin. Supa
 - **Webhook and asynchronous payment:** Lipila’s signed webhook is the source of truth for successful payment. The handler checks the signature, reference, and amount before confirming it. Receipt delivery uses an idempotency key; if email delivery fails, the Worker returns a retryable error, so confirm/configure Lipila’s webhook retry behavior before launch.
 - **Live updates:** Supabase Realtime uses WebSockets to notify connected members about confirmed contributions and refresh class messages.
 - **Edge and availability:** Cloudflare serves the site and API globally; a separate load balancer is not needed at this scale. Supabase and Resend are managed services, but their free-tier quotas and availability still apply, so keep database backups.
-- **What we intentionally leave out:** Redis/KV caching is unnecessary for a small class fund and risks stale balances; Kafka or a queue adds operational work without meaningful throughput needs; Docker and Kubernetes are not used because the app runs as a managed Worker rather than a server fleet. Add a queue only if payment traffic or email volume grows enough to justify it.
+- **What we intentionally leave out:** Redis/KV caching is unnecessary for a small class fund and risks stale balances; Kafka or a queue adds operational work without meaningful throughput needs; Kubernetes is unnecessary for a small class fund. Docker Compose is available for local development, while production continues to use the managed Cloudflare Worker. Add a queue only if payment traffic or email volume grows enough to justify it.
 
 ## Health and operational checks
 
