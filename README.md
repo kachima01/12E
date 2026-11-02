@@ -2,6 +2,48 @@
 
 A private contribution and classmate portal for David Livingstone Secondary School, Class of 2017. It uses React, TypeScript and Vite for the app, Supabase Auth/Postgres for member accounts and data, and Cloudflare Workers for private payment and email integrations.
 
+## Rust migration
+
+`rust/` contains a full Rust port of the app: a Leptos (WebAssembly) frontend in `rust/frontend` and a Rust Cloudflare Worker in `rust/worker`. It uses the same Supabase database (`schema.sql`), Lipila and Resend integrations as the JavaScript version, and the UI follows the [shadcn/ui](https://ui.shadcn.com) design system (re-created in plain CSS, with light and dark themes).
+
+Ported member flow: sign in, create account, forgot/reset password and email-link sign-in; membership-in-review screen; overview dashboard with fund chart and goal progress; mobile-money contribution with live payment status; contribution history; classmate directory; class messages; profile and password settings; realtime updates and notifications. Admins also get membership approval, payment verification, Lipila wallet balance and the audit log.
+
+Ported Worker endpoints: `/api/health`, `/api/config`, `/api/payment/checkout`, `/api/payment/status`, `/api/webhooks/lipila` (signed, idempotent), `/api/admin/contributions/confirm`, `/api/admin/contributions/reject`, `/api/admin/members/status` and `/api/admin/wallet`.
+
+The React app and JavaScript Worker remain the production version until the Rust preview has been tested end to end.
+
+The easiest way to try the Rust preview without using local disk space is to let GitHub Actions build and deploy it (see **Deploy the Rust preview** below): push a change under `rust/`, or run the workflow manually from the Actions tab. Nothing is built on your machine.
+
+To build and run the Rust preview locally with Docker instead (needs several GB for the Rust toolchain and build cache), create `.dev.vars` from `.dev.vars.example`, then run:
+
+```sh
+docker compose -f compose.rust.yaml up --build
+```
+
+The preview is available at `http://localhost:8787`.
+
+### Deploy the Rust preview
+
+The **Deploy Rust preview** GitHub Actions workflow builds and deploys this preview to a separate Cloudflare Worker named `12e-rust` when Rust files are pushed to `main`. It does not replace the existing production Worker or frontend. Add `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` under **Settings → Secrets and variables → Actions**; the token needs permission to deploy Workers. You can also start the workflow manually from the GitHub Actions tab.
+
+After deployment, the preview URL is `https://12e-rust.<your-workers.dev-subdomain>.workers.dev` (the subdomain is configured in your Cloudflare account). Before testing it:
+
+1. Add the Worker secrets to the `12e-rust` Worker (they are separate from the production Worker's secrets). The quickest way without installing anything is the Cloudflare dashboard: **Workers & Pages → 12e-rust → Settings → Variables and Secrets**, adding each name below as a secret. With Wrangler:
+
+   ```sh
+   cd rust/worker
+   npx wrangler secret put SUPABASE_SECRET_KEY
+   npx wrangler secret put LIPILA_CHECKOUT_URL
+   npx wrangler secret put LIPILA_API_KEY
+   npx wrangler secret put LIPILA_WEBHOOK_SECRET
+   npx wrangler secret put RESEND_API_KEY
+   npx wrangler secret put RESEND_FROM_EMAIL
+   ```
+
+   `GET /api/health` on the preview reports which services are configured.
+2. In Supabase, open **Authentication → URL Configuration** and add the preview URL to **Redirect URLs**. Otherwise confirmation and password-reset emails send members to the production site.
+3. Payments started on the preview tell Lipila to call back `https://12e-rust…/api/webhooks/lipila`, so test with Lipila's test API key first.
+
 ## Local development
 
 1. Install Node.js 20+ and dependencies:

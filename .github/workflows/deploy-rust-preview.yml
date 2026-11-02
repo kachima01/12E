@@ -1,0 +1,65 @@
+name: Deploy Rust preview
+on:
+  push:
+    branches: [main]
+    paths:
+      - "rust/**"
+      - ".github/workflows/deploy-rust-preview.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-rust-preview
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          cache-bin: true
+      - name: Install Rust build tools
+        run: |
+          curl -fsSL -o /tmp/trunk.tar.gz https://github.com/trunk-rs/trunk/releases/download/v0.22.1/trunk-x86_64-unknown-linux-musl.tar.gz
+          echo "a1fe5cd6b053f5a76f66b598d296022a7f06f56def6013cc16cd6897d53f5363  /tmp/trunk.tar.gz" | sha256sum --check
+          tar -xzf /tmp/trunk.tar.gz -C "$HOME/.cargo/bin" trunk
+          # worker-build must match the `worker` crate version in rust/worker/Cargo.toml
+          if ! worker-build --version 2>/dev/null | grep -q "0.8.7"; then
+            cargo install worker-build --version 0.8.7 --locked --force
+          fi
+      - name: Build Rust frontend
+        working-directory: rust/frontend
+        run: trunk build --release
+      - name: Build Rust Worker
+        working-directory: rust/worker
+        run: worker-build --release
+      - name: Verify Cloudflare credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::error::Add the CLOUDFLARE_API_TOKEN Actions secret in GitHub repository settings."
+            exit 1
+          fi
+          if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::Add the CLOUDFLARE_ACCOUNT_ID Actions secret in GitHub repository settings."
+            exit 1
+          fi
+      - name: Deploy Rust preview Worker
+        working-directory: rust/worker
+        run: npx --yes wrangler@4 deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

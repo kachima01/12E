@@ -1,0 +1,9 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: rust/Dockerfile
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./.dev.vars:/app/worker/.dev.vars:ro

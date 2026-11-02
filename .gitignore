@@ -4,6 +4,9 @@ node_modules
 backup.sql
 node_modules
 dist
+rust/**/target
+rust/**/dist
+rust/worker/build
 .env
 .env.local
 .env.*.local

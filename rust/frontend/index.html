@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#3f6450" />
+    <meta name="description" content="Private contribution and classmate portal for David Livingstone Secondary School, Class of 2017." />
+    <title>12E Reunion</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='9' fill='%233f6450'/%3E%3Cg fill='%23fff'%3E%3Crect x='18.5' y='6' width='3' height='8' rx='1.5'/%3E%3Crect x='18.5' y='26' width='3' height='8' rx='1.5'/%3E%3Crect x='6' y='18.5' width='8' height='3' rx='1.5'/%3E%3Crect x='26' y='18.5' width='8' height='3' rx='1.5'/%3E%3C/g%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" />
+    <!-- Apply the saved theme before first paint to avoid a light/dark flash. -->
+    <script>
+      try {
+        var saved = localStorage.getItem("reunion12e.theme");
+        if (saved === "dark" || (!saved && matchMedia("(prefers-color-scheme: dark)").matches)) {
+          document.documentElement.classList.add("dark");
+        }
+      } catch (_) {}
+    </script>
+    <link data-trunk rel="css" href="style.css" />
+  </head>
+  <body>
+    <noscript>12E Reunion needs JavaScript and WebAssembly enabled.</noscript>
+    <link data-trunk rel="rust" data-wasm-opt="z" />
+  </body>
+</html>

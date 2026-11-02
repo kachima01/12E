@@ -1,0 +1,9 @@
+[workspace]
+members = ["frontend", "worker"]
+resolver = "2"
+
+# Smaller WebAssembly for members on mobile data.
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "z"
